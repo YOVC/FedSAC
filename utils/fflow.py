@@ -19,9 +19,9 @@ optimizer_list=['SGD', 'Adam']  # 支持的优化器类型
 def read_option():
     parser = argparse.ArgumentParser()
     # 基本设置
-    parser.add_argument('--task', help='联邦学习任务名称', type=str, default='mnist_cnum100_dist0_skew0_seed0')
-    parser.add_argument('--algorithm', help='联邦学习算法名称', type=str, default='fedavg')
-    parser.add_argument('--model', help='模型名称', type=str, default='cnn')
+    parser.add_argument('--task', help='联邦学习任务名称', type=str, default='mnist_cnum10_dist0_skew0_seed0')
+    parser.add_argument('--algorithm', help='联邦学习算法名称', type=str, default='FedSAC')
+    parser.add_argument('--model', help='模型名称', type=str, default='mlp')
 
     # 服务器端的客户端采样和模型聚合方法
     parser.add_argument('--sample', help='客户端采样方法', type=str, choices=sample_list, default='md')
@@ -35,7 +35,7 @@ def read_option():
     # 本地训练的超参数
     parser.add_argument('--num_epochs', help='客户端本地训练的轮次数', type=int, default=5)
     parser.add_argument('--learning_rate', help='本地求解器的学习率', type=float, default=0.1)
-    parser.add_argument('--batch_size', help='客户端训练的批量大小', type=int, default=64)
+    parser.add_argument('--batch_size', help='客户端训练的批量大小', type=int, default=32)
     parser.add_argument('--optimizer', help='选择梯度下降优化器', type=str, choices=optimizer_list, default='SGD')
     parser.add_argument('--momentum', help='本地更新的动量系数', type=float, default=0)
 
@@ -55,7 +55,7 @@ def read_option():
 
     # 不同算法的超参数
     # FedAVE算法相关参数
-    parser.add_argument('--alpha_reputatio', help='CFFL中上一轮和本轮声誉的权重', type=float, default='0.95')
+    parser.add_argument('--alpha_reputatio', help='上一轮和本轮声誉的权重', type=float, default='0.95')
     parser.add_argument('--Gamma', help='FedAVE中梯度归一化系数', type=float, default='0.5')
     parser.add_argument('--Beta', help='FedAVE中奖励比例系数', type=float, default='2.0')
     

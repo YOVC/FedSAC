@@ -21,8 +21,8 @@ class Server(BasicServer):
         self.neuron_importance_eval_interval = option.get('neuron_eval_interval', 10)  # 神经元重要性评估间隔
         
         # 客户端声誉和贡献度
-        self.client_reputations = [1.0 for _ in range(len(self.clients))]
-        self.client_contributions = [0.0 for _ in range(len(self.clients))]
+        self.client_reputations = [0.0 for _ in range(len(self.clients))]
+        self.client_contributions = [0.8076, 0.8863, 0.9026, 0.9114, 0.9362, 0.9345, 0.949, 0.9466, 0.9517, 0.9578]
         
         # 神经元重要性分数
         self.neuron_importance = None
@@ -34,11 +34,19 @@ class Server(BasicServer):
         # 神经元聚合频率统计
         self.neuron_aggregation_frequency = None
         
+        # 归一化贡献度（选择性操作）
+        # self.compute_client_contributions()
+
+        # 更新客户端声誉（贡献度在初始化时已计算，保持不变）
+        self.update_client_reputations()
+        
     def run(self):
         """
         Start the federated learning system where the global model is trained iteratively.
         """
         logger.time_start('Total Time Cost')
+        # 用于存储相关系数的字典
+        corrs_agg = {}
         for round in range(self.num_rounds + 1):
             print("--------------Round {}--------------".format(round))
             logger.time_start('Time Cost')
@@ -46,7 +54,7 @@ class Server(BasicServer):
             self.global_lr_scheduler(round)
             logger.time_end('Time Cost')
             if logger.check_if_log(round, self.eval_interval): 
-                logger.log(self, round=round)
+                logger.log(self, round=round, corrs_agg=corrs_agg)
 
         print("=================End==================")
         logger.time_end('Total Time Cost')
@@ -64,20 +72,14 @@ class Server(BasicServer):
         if t % self.neuron_importance_eval_interval == 0:
             self.evaluate_neuron_importance()
         
-        # 2. 计算客户端贡献度
-        self.compute_client_contributions()
-        
-        # 3. 更新客户端声誉
-        self.update_client_reputations()
-        
-        # 4. 子模型分配模块：为每个客户端构建子模型
+        # 2. 子模型分配模块：为每个客户端构建子模型
         self.allocate_submodels()
         
-        # 5. 客户端本地训练
-        submodels, losses = self.communicate(self.selected_clients)
+        # 3. 客户端本地训练
+        trained_models, losses = self.communicate(self.selected_clients)
         
-        # 6. 动态聚合模块：基于神经元频率的动态聚合
-        self.dynamic_aggregation(submodels)
+        # 4. 动态聚合模块：基于神经元频率的动态聚合
+        self.dynamic_aggregation(trained_models)
         
         return
 
@@ -140,6 +142,8 @@ class Server(BasicServer):
                     
                     # 计算重要性分数
                     importance = modified_loss - original_loss
+                    # TODO 使用ReLU函数确保重要性为非负值
+                    importance = max(importance, 0)
                     layer_importance.append(importance)
                     
                     # 恢复原始权重
@@ -157,34 +161,24 @@ class Server(BasicServer):
         # 归一化重要性分数
         self.neuron_importance = torch.tensor(neuron_importance)
         if len(self.neuron_importance) > 0:
+            # 处理全零情况
+            if self.neuron_importance.sum() == 0:
+                # 如果所有重要性都为0，则赋予一个较小的重要性
+                self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
+                print("警告：所有神经元重要性评估为零，使用较小值代替")
             self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             # 计算重要性百分位数，用于子模型构建
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
 
+    
     def compute_client_contributions(self):
-        """
-        计算客户端贡献度
-        基于验证集性能来评估贡献度
-        """
-        if self.validation is None:
-            # 如果没有验证集，使用数据量作为贡献度
-            total_data = sum(len(client.train_data) for client in self.clients)
-            for i, client in enumerate(self.clients):
-                self.client_contributions[i] = len(client.train_data) / total_data
-            return
-        
-        # 使用验证集性能评估贡献度
-        contributions = []
-        for i, client in enumerate(self.clients):
-            # 使用客户端当前子模型在验证集上的性能作为贡献度
-            eval_metric, _ = client.test(self.client_submodels[i], 'valid')
-            contributions.append(eval_metric)
-        
         # 归一化贡献度
-        if sum(contributions) > 0:
-            self.client_contributions = [c / sum(contributions) for c in contributions]
+        if sum(self.client_contributions) > 0:
+            self.client_contributions = [c / sum(self.client_contributions) for c in self.client_contributions]
         else:
             self.client_contributions = [1.0 / len(self.clients) for _ in self.clients]
+            
+        print("Client contributions :", self.client_contributions)
 
     def update_client_reputations(self):
         """
@@ -204,6 +198,9 @@ class Server(BasicServer):
         """
         子模型分配模块
         根据客户端声誉分配不同性能的子模型
+        实现公式：θ_i = quantity(r_i, ∑_{n_i ∈ S} I_{n_i})
+        其中，quantity表示当r_i = ∑_{n_i ∈ S} I_{n_i}时的子模型θ_i
+        S代表模型中所有神经元的位置，按照从最不重要到最重要的顺序排列
         """
         if self.neuron_importance is None or len(self.neuron_importance) == 0:
             # 如果没有神经元重要性信息，直接使用全局模型
@@ -211,17 +208,31 @@ class Server(BasicServer):
                 self.client_submodels[i] = copy.deepcopy(self.model)
             return
         
+        # 获取按重要性排序的神经元索引（从最不重要到最重要）
+        sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
+        
         for i, reputation in enumerate(self.client_reputations):
-            # 根据声誉确定子模型应包含的神经元比例
-            neuron_ratio = reputation / 100.0
-            num_neurons_to_keep = max(1, int(len(self.neuron_importance) * neuron_ratio))
+            # 根据声誉值r_i确定要保留的神经元
+            # 从最重要的神经元开始选择，直到累积重要性达到声誉值
+            cumulative_importance = 0.0
+            neurons_to_keep = []
             
-            # 选择重要性最高的神经元
-            important_neuron_indices = self.neuron_importance_percentiles[-num_neurons_to_keep:]
+            # 从最重要的神经元开始（倒序遍历）
+            for idx in sorted_neuron_indices:
+                neurons_to_keep.append(idx)
+                cumulative_importance += self.neuron_importance[idx].item()
+                
+                # 当累积重要性达到或超过声誉值时停止
+                if cumulative_importance >= reputation:
+                    break
+            
+            # 确保至少保留一个神经元
+            if not neurons_to_keep:
+                neurons_to_keep = [sorted_neuron_indices[-1]]  # 保留最重要的神经元
             
             # 构建子模型（通过掩码实现）
             submodel = copy.deepcopy(self.model)
-            self.apply_neuron_mask(submodel, important_neuron_indices)
+            self.apply_neuron_mask(submodel, torch.tensor(neurons_to_keep))
             self.client_submodels[i] = submodel
 
     def apply_neuron_mask(self, model, keep_indices):
@@ -253,7 +264,7 @@ class Server(BasicServer):
                 
                 neuron_idx += num_neurons
 
-    def dynamic_aggregation(self, client_submodels):
+    def dynamic_aggregation(self, client_trained_models):
         """
         动态聚合模块
         基于神经元被聚合频率的加权机制
@@ -269,9 +280,10 @@ class Server(BasicServer):
         for name, param in self.model.named_parameters():
             current_frequency[name] = torch.zeros_like(param)
         
-        # 统计每个参数在多少个客户端模型中非零
-        for submodel in client_submodels:
-            for name, param in submodel.named_parameters():
+        # 使用分配的子模型（而不是训练后的模型）来计算掩码
+        # 这样可以准确反映每个客户端被分配训练的神经元
+        for i, allocated_submodel in enumerate(self.client_submodels):
+            for name, param in allocated_submodel.named_parameters():
                 mask = (param != 0).float()
                 current_frequency[name] += mask
         
@@ -283,22 +295,22 @@ class Server(BasicServer):
         aggregated_params = {}
         for name, param in self.model.named_parameters():
             weighted_sum = torch.zeros_like(param)
-            weight_sum = torch.zeros_like(param)
             
-            for submodel in client_submodels:
-                submodel_param = dict(submodel.named_parameters())[name]
+            # 使用训练后的模型进行聚合，但权重基于分配的子模型掩码
+            for i, trained_model in enumerate(client_trained_models):
+                trained_param = dict(trained_model.named_parameters())[name]
+                allocated_param = dict(self.client_submodels[i].named_parameters())[name]
+                
+                # 只聚合被分配的神经元（非零的部分）
+                allocation_mask = (allocated_param != 0).float()
+                
                 # 使用频率的倒数作为权重
                 frequency = current_frequency[name] + 1e-8  # 避免除零
-                weight = 1.0 / frequency
-                
-                # 只对非零参数进行聚合
-                mask = (submodel_param != 0).float()
-                weighted_sum += submodel_param * weight * mask
-                weight_sum += weight * mask
+                weight = allocation_mask / frequency  # 只对分配的神经元计算权重
+
+                weighted_sum += trained_param * weight
             
-            # 避免除零
-            weight_sum = torch.where(weight_sum > 0, weight_sum, torch.ones_like(weight_sum))
-            aggregated_params[name] = weighted_sum / weight_sum
+            aggregated_params[name] = weighted_sum
         
         # 更新全局模型
         for name, param in self.model.named_parameters():
@@ -309,8 +321,10 @@ class Server(BasicServer):
             for name, param in self.client_submodels[i].named_parameters():
                 if name in aggregated_params:
                     # 保持子模型的掩码结构
-                    mask = (param != 0).float()
-                    param.data = aggregated_params[name] * mask
+                    allocated_param = dict(self.client_submodels[i].named_parameters())[name]
+                    # 只聚合被分配的神经元（非零的部分）
+                    allocation_mask = (allocated_param != 0).float()
+                    param.data = aggregated_params[name] * allocation_mask
 
     def pack(self, client_id):
         """
@@ -320,23 +334,33 @@ class Server(BasicServer):
 
     def test(self, model=None):
         """
-        Evaluate the model on the test dataset owned by the server.
+        Evaluate each client's submodel on the test dataset owned by the server.
+        Returns a list of evaluation metrics for each client's submodel to support fairness analysis.
         """
-        if model is None:
-            model = self.model
-        
         if self.test_data:
-            model.eval()
-            loss = 0
-            eval_metric = 0
-            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
-            for batch_id, batch_data in enumerate(data_loader):
-                bmean_eval_metric, bmean_loss = self.calculator.test(model, batch_data)
-                loss += bmean_loss * len(batch_data[1])
-                eval_metric += bmean_eval_metric * len(batch_data[1])
-            eval_metric /= len(self.test_data)
-            loss /= len(self.test_data)
-            return eval_metric, loss
+            eval_metrics, losses = [], []
+            
+            # 评估每个客户端的子模型
+            for i in range(len(self.clients)):
+                submodel = self.client_submodels[i] if hasattr(self, 'client_submodels') and i < len(self.client_submodels) else self.model
+                
+                submodel.eval()
+                loss = 0
+                eval_metric = 0
+                data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+                
+                for batch_id, batch_data in enumerate(data_loader):
+                    bmean_eval_metric, bmean_loss = self.calculator.test(submodel, batch_data)
+                    loss += bmean_loss * len(batch_data[1])
+                    eval_metric += bmean_eval_metric * len(batch_data[1])
+                
+                eval_metric /= len(self.test_data)
+                loss /= len(self.test_data)
+                
+                eval_metrics.append(eval_metric)
+                losses.append(loss)
+            
+            return eval_metrics, losses
         else:
             return -1, -1
 
