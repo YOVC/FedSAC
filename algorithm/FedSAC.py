@@ -67,19 +67,21 @@ class Server(BasicServer):
         FedSAC核心迭代过程
         """
         self.selected_clients = [i for i in range(self.num_clients)]
-        
-        # 1. 神经元重要性评估（每10轮评估一次）
+        print("开始第{}轮训练".format(t))
+        # 1. 客户端本地训练
+        trained_models, losses = self.communicate(self.selected_clients)
+        print("开始进行动态聚合")
+        # 2. 动态聚合模块：基于神经元频率的动态聚合
+        self.dynamic_aggregation(trained_models, round_num=t)
+        # 测试本地训练完成后的模型精度和聚合后的全局模型精度
+        test_results = self.test_local_and_global_models(trained_models, t)
+        print("开始进行神经元重要性评估")
+        # 3. 神经元重要性评估（每10轮评估一次）
         if t % self.neuron_importance_eval_interval == 0:
             self.evaluate_neuron_importance()
-        
-        # 2. 子模型分配模块：为每个客户端构建子模型
+        print("开始进行子模型分配")
+        # 4. 子模型分配模块：为每个客户端构建子模型（基于更新后的神经元重要性）
         self.allocate_submodels()
-        
-        # 3. 客户端本地训练
-        trained_models, losses = self.communicate(self.selected_clients)
-        
-        # 4. 动态聚合模块：基于神经元频率的动态聚合
-        self.dynamic_aggregation(trained_models)
         
         return
 
@@ -217,7 +219,7 @@ class Server(BasicServer):
             cumulative_importance = 0.0
             neurons_to_keep = []
             
-            # 从最重要的神经元开始（倒序遍历）
+            # 从最不重要的神经元开始（倒序遍历）
             for idx in sorted_neuron_indices:
                 neurons_to_keep.append(idx)
                 cumulative_importance += self.neuron_importance[idx].item()
@@ -264,7 +266,7 @@ class Server(BasicServer):
                 
                 neuron_idx += num_neurons
 
-    def dynamic_aggregation(self, client_trained_models):
+    def dynamic_aggregation(self, client_trained_models, round_num=0):
         """
         动态聚合模块
         基于神经元被聚合频率的加权机制
@@ -280,12 +282,18 @@ class Server(BasicServer):
         for name, param in self.model.named_parameters():
             current_frequency[name] = torch.zeros_like(param)
         
-        # 使用分配的子模型（而不是训练后的模型）来计算掩码
-        # 这样可以准确反映每个客户端被分配训练的神经元
-        for i, allocated_submodel in enumerate(self.client_submodels):
-            for name, param in allocated_submodel.named_parameters():
-                mask = (param != 0).float()
-                current_frequency[name] += mask
+        # 第一轮特殊处理：所有神经元的分配频次都为客户端数量
+        if round_num == 0:
+            # 第一轮时，所有神经元都被所有客户端使用
+            for name, param in self.model.named_parameters():
+                current_frequency[name] = torch.ones_like(param) * len(self.clients)
+        else:
+            # 后续轮次：使用上一轮分配的子模型来计算掩码
+            for i, allocated_submodel in enumerate(self.client_submodels):
+                   if allocated_submodel is not None:
+                    for name, param in allocated_submodel.named_parameters():
+                        mask = (param != 0).float()
+                        current_frequency[name] += mask
         
         # 更新全局聚合频率
         for name in current_frequency:
@@ -296,40 +304,53 @@ class Server(BasicServer):
         for name, param in self.model.named_parameters():
             weighted_sum = torch.zeros_like(param)
             
-            # 使用训练后的模型进行聚合，但权重基于分配的子模型掩码
-            for i, trained_model in enumerate(client_trained_models):
-                trained_param = dict(trained_model.named_parameters())[name]
-                allocated_param = dict(self.client_submodels[i].named_parameters())[name]
-                
-                # 只聚合被分配的神经元（非零的部分）
-                allocation_mask = (allocated_param != 0).float()
-                
-                # 使用频率的倒数作为权重
-                frequency = current_frequency[name] + 1e-8  # 避免除零
-                weight = allocation_mask / frequency  # 只对分配的神经元计算权重
-
-                weighted_sum += trained_param * weight
-            
-            aggregated_params[name] = weighted_sum
+            if round_num == 0:
+                # 第一轮或没有子模型信息：简单平均聚合
+                for i, trained_model in enumerate(client_trained_models):
+                    trained_param = dict(trained_model.named_parameters())[name]
+                    weighted_sum += trained_param
+                aggregated_params[name] = weighted_sum / len(client_trained_models)
+            else:
+                # 后续轮次：使用训练后的模型进行聚合，但权重基于上一轮分配的子模型掩码
+                for i, trained_model in enumerate(client_trained_models):
+                    trained_param = dict(trained_model.named_parameters())[name]
+                    
+                    allocated_param = dict(self.client_submodels[i].named_parameters())[name]
+                    # 只聚合被分配的神经元（非零的部分）
+                    allocation_mask = (allocated_param != 0).float()
+                    # 使用频率的倒数作为权重
+                    frequency = current_frequency[name] + 1e-8  # 避免除零
+                    weight = allocation_mask / frequency  # 只对分配的神经元计算权重
+                    
+                    weighted_sum += trained_param * weight
         
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
         
-        # 更新所有客户端子模型的基础
-        for i in range(len(self.clients)):
-            for name, param in self.client_submodels[i].named_parameters():
-                if name in aggregated_params:
-                    # 保持子模型的掩码结构
-                    allocated_param = dict(self.client_submodels[i].named_parameters())[name]
-                    # 只聚合被分配的神经元（非零的部分）
-                    allocation_mask = (allocated_param != 0).float()
-                    param.data = aggregated_params[name] * allocation_mask
-
     def pack(self, client_id):
         """
         Pack the necessary information for the client's local training.
         """
+        # 检查是否有有效的客户端子模型
+        if (not hasattr(self, 'client_submodels') or 
+            client_id >= len(self.client_submodels) or
+            self.client_submodels[client_id] is None):
+            # 如果没有子模型，返回全局模型的副本
+            return {"model": copy.deepcopy(self.model)}
+        
+        # 检查子模型是否为空（所有参数都为0）
+        submodel = self.client_submodels[client_id]
+        has_nonzero_params = False
+        for param in submodel.parameters():
+            if torch.any(param != 0):
+                has_nonzero_params = True
+                break
+        
+        if not has_nonzero_params:
+            # 如果子模型的所有参数都为0，返回全局模型的副本
+            return {"model": copy.deepcopy(self.model)}
+        
         return {"model": copy.deepcopy(self.client_submodels[client_id])}
 
     def test(self, model=None):
@@ -374,6 +395,81 @@ class Server(BasicServer):
             evals.append(eval_value)
             losses.append(loss)
         return evals, losses
+
+    def test_local_and_global_models(self, trained_models, round_num):
+        """
+        测试本地训练完成后的模型精度和聚合后的全局模型精度
+        
+        Args:
+            trained_models: 客户端本地训练完成后的模型列表
+            round_num: 当前轮次
+            
+        Returns:
+            dict: 包含本地模型和全局模型测试结果的字典
+        """
+        results = {
+            'local_models': {'eval_metrics': [], 'losses': []},
+            'global_model': {'eval_metric': 0.0, 'loss': 0.0}
+        }
+        
+        if not self.test_data:
+            print("警告：没有测试数据，无法进行模型评估")
+            return results
+        
+        # 1. 测试本地训练完成后的模型精度
+        print(f"轮次 {round_num}: 测试本地训练完成后的模型精度...")
+        for i, trained_model in enumerate(trained_models):
+            trained_model.eval()
+            loss = 0
+            eval_metric = 0
+            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+            
+            total_samples = 0
+            for batch_id, batch_data in enumerate(data_loader):
+                bmean_eval_metric, bmean_loss = self.calculator.test(trained_model, batch_data)
+                loss += bmean_loss * len(batch_data[1])
+                eval_metric += bmean_eval_metric * len(batch_data[1])
+                total_samples += len(batch_data[1])
+            
+            if total_samples > 0:
+                eval_metric /= total_samples
+                loss /= total_samples
+            
+            results['local_models']['eval_metrics'].append(eval_metric)
+            results['local_models']['losses'].append(loss)
+            
+            print(f"  客户端 {i}: 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
+        
+        # 计算本地模型的平均性能
+        if results['local_models']['eval_metrics']:
+            avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
+            avg_local_loss = sum(results['local_models']['losses']) / len(results['local_models']['losses'])
+            print(f"  本地模型平均: 精度 = {avg_local_metric:.4f}, 损失 = {avg_local_loss:.4f}")
+        
+        # 2. 测试聚合后的全局模型精度
+        print(f"轮次 {round_num}: 测试聚合后的全局模型精度...")
+        self.model.eval()
+        loss = 0
+        eval_metric = 0
+        data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+        
+        total_samples = 0
+        for batch_id, batch_data in enumerate(data_loader):
+            bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
+            loss += bmean_loss * len(batch_data[1])
+            eval_metric += bmean_eval_metric * len(batch_data[1])
+            total_samples += len(batch_data[1])
+        
+        if total_samples > 0:
+            eval_metric /= total_samples
+            loss /= total_samples
+        
+        results['global_model']['eval_metric'] = eval_metric
+        results['global_model']['loss'] = loss
+        
+        print(f"  全局模型: 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
+        
+        return results
 
 
 class Client(BasicClient):
