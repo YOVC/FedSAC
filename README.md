@@ -4,7 +4,7 @@ This repository is an implementation of the collaborative fairness of federated 
 ## First
 Run the command below to get the splited dataset MNIST:
 ```
-python generate_fedtask.py --dataset mnist --dist 0 --skew 0 --num_clients 10
+python generate_fedtask.py --dataset cifar10 --dist 18 --skew 0 --num_clients 10
 ```
 
 ## Second
