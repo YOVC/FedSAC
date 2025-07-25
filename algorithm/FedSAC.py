@@ -22,7 +22,7 @@ class Server(BasicServer):
         
         # 客户端声誉和贡献度
         self.client_reputations = [0.0 for _ in range(len(self.clients))]
-        self.client_contributions = [0.1585, 0.2029, 0.2158, 0.2176, 0.3111, 0.3101, 0.3936, 0.3008, 0.3752, 0.3683]
+        self.client_contributions = [0.3102, 0.387, 0.4048, 0.1554, 0.4775, 0.4996, 0.5291, 0.515, 0.5361, 0.5653]
         
         # 神经元重要性分数
         self.neuron_importance = None
@@ -82,7 +82,6 @@ class Server(BasicServer):
         print("开始进行子模型分配")
         # 4. 子模型分配模块：为每个客户端构建子模型（基于更新后的神经元重要性）
         self.allocate_submodels()
-        
         return
 
     def evaluate_neuron_importance(self):
@@ -92,10 +91,8 @@ class Server(BasicServer):
         """
         if self.validation is None:
             return
-            
         self.model.eval()
         data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
-        
         # 计算原始损失
         total_loss = 0
         total_samples = 0
@@ -104,10 +101,8 @@ class Server(BasicServer):
             total_loss += loss * len(batch_data[1])
             total_samples += len(batch_data[1])
         original_loss = total_loss / total_samples
-        
         # 计算每个神经元的重要性
         neuron_importance = []
-        
         # 遍历模型的每一层
         for layer_idx, (name, module) in enumerate(self.model.named_modules()):
             if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
@@ -116,10 +111,8 @@ class Server(BasicServer):
                     num_neurons = module.out_features
                 elif isinstance(module, torch.nn.Conv2d):
                     num_neurons = module.out_channels
-                
                 layer_importance = []
                 original_weight = module.weight.data.clone()
-                
                 for neuron_idx in range(num_neurons):
                     # 将该神经元的权重设为0
                     if isinstance(module, torch.nn.Linear):
@@ -132,7 +125,6 @@ class Server(BasicServer):
                         if module.bias is not None:
                             original_bias = module.bias.data[neuron_idx].clone()
                             module.bias.data[neuron_idx] = 0
-                    
                     # 计算移除该神经元后的损失
                     total_loss_modified = 0
                     total_samples_modified = 0
@@ -141,13 +133,11 @@ class Server(BasicServer):
                         total_loss_modified += loss * len(batch_data[1])
                         total_samples_modified += len(batch_data[1])
                     modified_loss = total_loss_modified / total_samples_modified
-                    
                     # 计算重要性分数
                     importance = modified_loss - original_loss
                     # TODO 使用ReLU函数确保重要性为非负值
                     importance = max(importance, 0)
                     layer_importance.append(importance)
-                    
                     # 恢复原始权重
                     if isinstance(module, torch.nn.Linear):
                         module.weight.data[neuron_idx, :] = original_weight[neuron_idx, :]
@@ -156,10 +146,8 @@ class Server(BasicServer):
                     elif isinstance(module, torch.nn.Conv2d):
                         module.weight.data[neuron_idx, :, :, :] = original_weight[neuron_idx, :, :, :]
                         if module.bias is not None:
-                            module.bias.data[neuron_idx] = original_bias
-                
+                            module.bias.data[neuron_idx] = original_bias                       
                 neuron_importance.extend(layer_importance)
-        
         # 归一化重要性分数
         self.neuron_importance = torch.tensor(neuron_importance)
         if len(self.neuron_importance) > 0:
@@ -171,15 +159,12 @@ class Server(BasicServer):
             self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             # 计算重要性百分位数，用于子模型构建
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
-
-    
     def compute_client_contributions(self):
         # 归一化贡献度
         if sum(self.client_contributions) > 0:
             self.client_contributions = [c / sum(self.client_contributions) for c in self.client_contributions]
         else:
             self.client_contributions = [1.0 / len(self.clients) for _ in self.clients]
-            
         print("Client contributions :", self.client_contributions)
 
     def update_client_reputations(self):
@@ -189,7 +174,6 @@ class Server(BasicServer):
         """
         # 计算声誉
         raw_reputations = [math.exp(c * self.beta) for c in self.client_contributions]
-        
         # 归一化到[0, 100]
         if max(raw_reputations) > 0:
             self.client_reputations = [r / max(raw_reputations) * 100 for r in raw_reputations]
@@ -209,29 +193,23 @@ class Server(BasicServer):
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
             return
-        
         # 获取按重要性排序的神经元索引（从最不重要到最重要）
         sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
-        
         for i, reputation in enumerate(self.client_reputations):
             # 根据声誉值r_i确定要保留的神经元
             # 从最重要的神经元开始选择，直到累积重要性达到声誉值
             cumulative_importance = 0.0
             neurons_to_keep = []
-            
             # 从最不重要的神经元开始（倒序遍历）
             for idx in sorted_neuron_indices:
                 neurons_to_keep.append(idx)
                 cumulative_importance += self.neuron_importance[idx].item()
-                
                 # 当累积重要性达到或超过声誉值时停止
                 if cumulative_importance >= reputation:
                     break
-            
             # 确保至少保留一个神经元
             if not neurons_to_keep:
                 neurons_to_keep = [sorted_neuron_indices[-1]]  # 保留最重要的神经元
-            
             # 构建子模型（通过掩码实现）
             submodel = copy.deepcopy(self.model)
             self.apply_neuron_mask(submodel, torch.tensor(neurons_to_keep))
@@ -243,14 +221,12 @@ class Server(BasicServer):
         """
         neuron_idx = 0
         keep_indices_set = set(keep_indices.tolist())
-        
         for name, module in model.named_modules():
             if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
                 if isinstance(module, torch.nn.Linear):
                     num_neurons = module.out_features
                 elif isinstance(module, torch.nn.Conv2d):
                     num_neurons = module.out_channels
-                
                 # 为不在保留列表中的神经元设置权重为0
                 for local_idx in range(num_neurons):
                     global_idx = neuron_idx + local_idx
@@ -263,7 +239,6 @@ class Server(BasicServer):
                             module.weight.data[local_idx, :, :, :] = 0
                             if module.bias is not None:
                                 module.bias.data[local_idx] = 0
-                
                 neuron_idx += num_neurons
 
     def dynamic_aggregation(self, client_trained_models, round_num=0):
@@ -276,12 +251,10 @@ class Server(BasicServer):
             self.neuron_aggregation_frequency = {}
             for name, param in self.model.named_parameters():
                 self.neuron_aggregation_frequency[name] = torch.zeros_like(param)
-        
         # 计算当前轮次每个参数的聚合频率
         current_frequency = {}
         for name, param in self.model.named_parameters():
             current_frequency[name] = torch.zeros_like(param)
-        
         # 第一轮特殊处理：所有神经元的分配频次都为客户端数量
         if round_num == 0:
             # 第一轮时，所有神经元都被所有客户端使用
@@ -290,26 +263,30 @@ class Server(BasicServer):
         else:
             # 后续轮次：使用上一轮分配的子模型来计算掩码
             for i, allocated_submodel in enumerate(self.client_submodels):
-                   if allocated_submodel is not None:
+                if allocated_submodel is not None:
                     for name, param in allocated_submodel.named_parameters():
                         mask = (param != 0).float()
                         current_frequency[name] += mask
-        
         # 更新全局聚合频率
         for name in current_frequency:
             self.neuron_aggregation_frequency[name] += current_frequency[name]
-        
         # 动态聚合：频率越高的参数权重越小
         aggregated_params = {}
         for name, param in self.model.named_parameters():
             weighted_sum = torch.zeros_like(param)
-            
             if round_num == 0:
-                # 第一轮或没有子模型信息：简单平均聚合
+                # 第一轮：简单平均聚合
                 for i, trained_model in enumerate(client_trained_models):
                     trained_param = dict(trained_model.named_parameters())[name]
                     weighted_sum += trained_param
                 aggregated_params[name] = weighted_sum / len(client_trained_models)
+                
+                # 检查聚合后的参数是否合理
+                if torch.isnan(aggregated_params[name]).any():
+                    print(f"警告：参数 {name} 聚合后包含NaN值")
+                if torch.isinf(aggregated_params[name]).any():
+                    print(f"警告：参数 {name} 聚合后包含无穷值")
+                    
             else:
                 # 后续轮次：使用训练后的模型进行聚合，但权重基于上一轮分配的子模型掩码
                 for i, trained_model in enumerate(client_trained_models):
@@ -323,10 +300,35 @@ class Server(BasicServer):
                     weight = allocation_mask / frequency  # 只对分配的神经元计算权重
                     
                     weighted_sum += trained_param * weight
-        
+                aggregated_params[name] = weighted_sum
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
+        
+        # 聚合BatchNorm层的统计信息（running_mean和running_var）
+        aggregated_buffers = {}
+        for name, buffer in self.model.named_buffers():
+            if 'running_mean' in name or 'running_var' in name:
+                weighted_sum = torch.zeros_like(buffer)
+                
+                # 对于BatchNorm统计信息，始终使用简单平均聚合
+                for i, trained_model in enumerate(client_trained_models):
+                    trained_buffer = dict(trained_model.named_buffers())[name]
+                    weighted_sum += trained_buffer
+                
+                aggregated_buffers[name] = weighted_sum / len(client_trained_models)
+            elif 'num_batches_tracked' in name:
+                # 对于num_batches_tracked，取最大值
+                max_batches = torch.zeros_like(buffer)
+                for i, trained_model in enumerate(client_trained_models):
+                    trained_buffer = dict(trained_model.named_buffers())[name]
+                    max_batches = torch.max(max_batches, trained_buffer)
+                aggregated_buffers[name] = max_batches
+        
+        # 更新全局模型的缓冲区
+        for name, buffer in self.model.named_buffers():
+            if name in aggregated_buffers:
+                buffer.data = aggregated_buffers[name]
         
     def pack(self, client_id):
         """
