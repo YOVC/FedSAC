@@ -15,9 +15,9 @@ import os
 class Server(BasicServer):
     def __init__(self, option, model, clients, test_data=None, validation=None):
         super(Server, self).__init__(option, model, clients, test_data, validation)
-        
+        # standalone accuracy [0.4018, 0.2967, 0.3491, 0.4671, 0.3021, 0.3817, 0.389, 0.4454, 0.3589, 0.281]
         # 固定的裁剪比例设置（10个客户端）
-        self.fixed_pruning_ratios = [0.0, 0.1, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6]
+        self.fixed_pruning_ratios = [0.2, 0.5, 0.4, 0.0, 0.45, 0.3, 0.25, 0.1, 0.35, 0.6]
         
         print(f"客户端裁剪比例设置: {self.fixed_pruning_ratios}")
         
