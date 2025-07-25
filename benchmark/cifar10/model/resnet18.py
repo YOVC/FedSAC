@@ -21,16 +21,16 @@ class BasicBlock(nn.Module):
     #to distinct
     expansion = 1
 
-    def __init__(self, in_channels, out_channels, stride=1):
+    def __init__(self, in_channels, out_channels, stride=1, track=False):
         super().__init__()
 
         #residual function
         self.residual_function = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels, momentum=None, track_running_stats=track),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels * BasicBlock.expansion, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels * BasicBlock.expansion)
+            nn.BatchNorm2d(out_channels * BasicBlock.expansion, momentum=None, track_running_stats=track)
         )
 
         #shortcut
@@ -41,7 +41,7 @@ class BasicBlock(nn.Module):
         if stride != 1 or in_channels != BasicBlock.expansion * out_channels:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels * BasicBlock.expansion, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels * BasicBlock.expansion)
+                nn.BatchNorm2d(out_channels * BasicBlock.expansion, momentum=None, track_running_stats=track)
             )
 
     def forward(self, x):
@@ -52,17 +52,17 @@ class BottleNeck(nn.Module):
 
     """
     expansion = 4
-    def __init__(self, in_channels, out_channels, stride=1):
+    def __init__(self, in_channels, out_channels, stride=1, track=False):
         super().__init__()
         self.residual_function = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels, momentum=None, track_running_stats=track),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, stride=stride, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(out_channels, momentum=None, track_running_stats=track),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels * BottleNeck.expansion, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels * BottleNeck.expansion),
+            nn.BatchNorm2d(out_channels * BottleNeck.expansion, momentum=None, track_running_stats=track),
         )
 
         self.shortcut = nn.Sequential()
@@ -70,19 +70,20 @@ class BottleNeck(nn.Module):
         if stride != 1 or in_channels != out_channels * BottleNeck.expansion:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels * BottleNeck.expansion, stride=stride, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels * BottleNeck.expansion)
+                nn.BatchNorm2d(out_channels * BottleNeck.expansion, momentum=None, track_running_stats=track)
             )
 
     def forward(self, x):
         return nn.ReLU(inplace=True)(self.residual_function(x) + self.shortcut(x))
 
 class Model(FModule):
-    def __init__(self, block=BasicBlock, num_block=[2,2,2,2], num_classes=10):
+    def __init__(self, block=BasicBlock, num_block=[2,2,2,2], num_classes=10, track=False):
         super().__init__()
         self.in_channels = 64
+        self.track = track
         self.conv1 = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(64, momentum=None, track_running_stats=track),
             nn.ReLU(inplace=True))
         #we use a different inputsize than the original paper
         #so conv2_x's stride is 1
@@ -113,7 +114,7 @@ class Model(FModule):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_channels, out_channels, stride))
+            layers.append(block(self.in_channels, out_channels, stride, self.track))
             self.in_channels = out_channels * block.expansion
 
         return nn.Sequential(*layers)
