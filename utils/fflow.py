@@ -73,6 +73,8 @@ def read_option():
     parser.add_argument('--standalone', help='客户端是否独立训练', type=float, default='0.0')
     parser.add_argument('--num_epochs_standalone', help='独立训练的通信轮次数', type=float, default='500')
     parser.add_argument('--standalone_loss', help='FedProx中的独立损失', type=float, default='0.0')
+    # FedSAC和相关算法的参数
+    parser.add_argument('--neuron_eval_interval', help='神经元重要性评估间隔', type=int, default=10)
 
     try: option = vars(parser.parse_args())       #vars()返回对象object的属性和属性值的字典对象
     except IOError as msg: parser.error(str(msg))
