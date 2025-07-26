@@ -32,4 +32,18 @@ python main.py \
     --gpu 0 \
     --neuron_eval_interval 1
 
+
+echo "运行HessianValue_FixedPruning算法..."
+python main.py \
+    --task cifar10_cnum10_dist2_skew0.5_seed0 \
+    --algorithm HessianValue_FixedPruning \
+    --model resnet18 \
+    --num_rounds 50 \
+    --num_epochs 15 \
+    --learning_rate 0.01 \
+    --batch_size 32 \
+    --eval_interval 1 \
+    --seed 0 \
+    --gpu 0 \
+    --neuron_eval_interval 1
 echo "实验完成！"

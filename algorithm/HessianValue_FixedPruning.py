@@ -552,30 +552,42 @@ class Client(BasicClient):
         Standard local training procedure. Train the transmitted model with local training dataset.
         """
         model.train()
-        optimizer = self.calculator.get_optimizer(model, lr=self.learning_rate, weight_decay=self.weight_decay, momentum=self.momentum)
-        for iter in range(self.num_steps):
-            # get a batch of data
-            batch_data = self.get_batch_data()
-            model.zero_grad()
-            # calculate the loss of the model on batched dataset through task-specified calculator
-            loss = self.calculator.compute_loss(model, batch_data)['loss']
-            loss.backward()
-            optimizer.step()
+        data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
+        optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
+                                                lr=self.learning_rate, 
+                                                weight_decay=self.weight_decay, 
+                                                momentum=self.momentum)
+        
+        for iter in range(self.epochs):
+            for batch_id, batch_data in enumerate(data_loader):
+                model.zero_grad()
+                loss = self.calculator.get_loss(model, batch_data)
+                loss.backward()
+                optimizer.step()
         return
 
     def test(self, model, dataflag='valid'):
         """
-        Evaluate the model with local data (e.g. training data or validating data).
+        Evaluate the model with local data.
         """
         dataset = self.train_data if dataflag == 'train' else self.valid_data
+        if dataset is None:
+            return 0.0, 0.0
+            
         model.eval()
         loss = 0
         eval_metric = 0
         data_loader = self.calculator.get_data_loader(dataset, batch_size=64)
+        
+        total_samples = 0
         for batch_id, batch_data in enumerate(data_loader):
             bmean_eval_metric, bmean_loss = self.calculator.test(model, batch_data)
             loss += bmean_loss * len(batch_data[1])
             eval_metric += bmean_eval_metric * len(batch_data[1])
-        eval_metric /= len(dataset)
-        loss /= len(dataset)
+            total_samples += len(batch_data[1])
+        
+        if total_samples > 0:
+            eval_metric /= total_samples
+            loss /= total_samples
+        
         return eval_metric, loss
