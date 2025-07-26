@@ -11,6 +11,10 @@ from torch.linalg import norm
 from main import logger
 import utils.fflow as flw
 import os
+import logging
+
+# 配置日志格式
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Server(BasicServer):
     def __init__(self, option, model, clients, test_data=None, validation=None):
@@ -48,7 +52,7 @@ class Server(BasicServer):
         # 用于存储相关系数的字典
         corrs_agg = {}
         for round in range(self.num_rounds + 1):
-            print("--------------Round {}--------------".format(round))
+            logging.info(f"--------------Round {round}--------------")
             logger.time_start('Time Cost')
             self.iterate(round)
             self.global_lr_scheduler(round)
@@ -56,7 +60,7 @@ class Server(BasicServer):
             if logger.check_if_log(round, self.eval_interval): 
                 logger.log(self, round=round, corrs_agg=corrs_agg)
 
-        print("=================End==================")
+        logging.info("==================== 训练完成 ====================")
         logger.time_end('Total Time Cost')
         # save results as .json file
         logger.save(os.path.join('fedtask', self.option['task'], 'record', flw.output_filename(self.option, self)))
@@ -67,21 +71,30 @@ class Server(BasicServer):
         FedSAC核心迭代过程
         """
         self.selected_clients = [i for i in range(self.num_clients)]
-        print("开始第{}轮训练".format(t))
+        logging.info(f"开始客户端本地训练")
         # 1. 客户端本地训练
         trained_models, losses = self.communicate(self.selected_clients)
-        print("开始进行动态聚合")
+
+        logging.info(f"开始动态聚合")
         # 2. 动态聚合模块：基于神经元频率的动态聚合
         self.dynamic_aggregation(trained_models, round_num=t)
+
         # 测试本地训练完成后的模型精度和聚合后的全局模型精度
+        logging.info(f"评估 客户端本地训练后 模型性能")
         test_results = self.test_local_and_global_models(trained_models, t)
-        print("开始进行神经元重要性评估")
+        
         # 3. 神经元重要性评估（每10轮评估一次）
         if t % self.neuron_importance_eval_interval == 0:
+            logging.info(f"开始神经元重要性评估")
             self.evaluate_neuron_importance()
-        print("开始进行子模型分配")
+            
+        logging.info(f"开始子模型分配")
         # 4. 子模型分配模块：为每个客户端构建子模型（基于更新后的神经元重要性）
         self.allocate_submodels()
+
+        # 5. 测试子模型精度
+        logging.info(f"开始测试子模型精度")
+        self.test_local_and_global_models(self.client_submodels, t, isTestGlobal=False)
         return
 
     def evaluate_neuron_importance(self):
@@ -90,9 +103,12 @@ class Server(BasicServer):
         使用Taylor-FO方法评估每个神经元的重要性
         """
         if self.validation is None:
+            logging.warning("[FedSAC] 没有验证数据，跳过神经元重要性评估")
             return
+            
         self.model.eval()
         data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
+        
         # 计算原始损失
         total_loss = 0
         total_samples = 0
@@ -103,6 +119,8 @@ class Server(BasicServer):
         original_loss = total_loss / total_samples
         # 计算每个神经元的重要性
         neuron_importance = []
+        neuron_count = 0
+        
         # 遍历模型的每一层
         for layer_idx, (name, module) in enumerate(self.model.named_modules()):
             if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
@@ -111,8 +129,11 @@ class Server(BasicServer):
                     num_neurons = module.out_features
                 elif isinstance(module, torch.nn.Conv2d):
                     num_neurons = module.out_channels
+                    
+                neuron_count += num_neurons
                 layer_importance = []
                 original_weight = module.weight.data.clone()
+                
                 for neuron_idx in range(num_neurons):
                     # 将该神经元的权重设为0
                     if isinstance(module, torch.nn.Linear):
@@ -125,6 +146,7 @@ class Server(BasicServer):
                         if module.bias is not None:
                             original_bias = module.bias.data[neuron_idx].clone()
                             module.bias.data[neuron_idx] = 0
+                            
                     # 计算移除该神经元后的损失
                     total_loss_modified = 0
                     total_samples_modified = 0
@@ -133,11 +155,13 @@ class Server(BasicServer):
                         total_loss_modified += loss * len(batch_data[1])
                         total_samples_modified += len(batch_data[1])
                     modified_loss = total_loss_modified / total_samples_modified
+                    
                     # 计算重要性分数
                     importance = modified_loss - original_loss
                     # TODO 使用ReLU函数确保重要性为非负值
                     importance = max(importance, 0)
                     layer_importance.append(importance)
+                    
                     # 恢复原始权重
                     if isinstance(module, torch.nn.Linear):
                         module.weight.data[neuron_idx, :] = original_weight[neuron_idx, :]
@@ -148,6 +172,7 @@ class Server(BasicServer):
                         if module.bias is not None:
                             module.bias.data[neuron_idx] = original_bias                       
                 neuron_importance.extend(layer_importance)
+                
         # 归一化重要性分数
         self.neuron_importance = torch.tensor(neuron_importance)
         if len(self.neuron_importance) > 0:
@@ -155,10 +180,14 @@ class Server(BasicServer):
             if self.neuron_importance.sum() == 0:
                 # 如果所有重要性都为0，则赋予一个较小的重要性
                 self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
-                print("警告：所有神经元重要性评估为零，使用较小值代替")
+                logging.warning("所有神经元重要性评估为零，使用默认小值代替")
             self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             # 计算重要性百分位数，用于子模型构建
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
+            
+            logging.info(f"[FedSAC] 神经元重要性评估完成 - 总神经元数: {neuron_count}, "
+                        f"重要性范围: [{self.neuron_importance.min().item():.6f}, {self.neuron_importance.max().item():.6f}]")
+
     def compute_client_contributions(self):
         # 归一化贡献度
         if sum(self.client_contributions) > 0:
@@ -290,15 +319,16 @@ class Server(BasicServer):
                 aggregated_params[name] = weighted_sum
         
         # 检查聚合后的参数是否合理
-        if torch.isnan(aggregated_params[name]).any():
-            print(f"警告：参数 {name} 聚合后包含NaN值")
-        if torch.isinf(aggregated_params[name]).any():
-            print(f"警告：参数 {name} 聚合后包含无穷值")
+        for name in aggregated_params:
+            if torch.isnan(aggregated_params[name]).any():
+                logging.error(f"[FedSAC] 参数 {name} 聚合后包含NaN值")
+            if torch.isinf(aggregated_params[name]).any():
+                logging.error(f"[FedSAC] 参数 {name} 聚合后包含无穷值")
 
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
-        
+
         # # 聚合BatchNorm层的统计信息（running_mean和running_var）
         # aggregated_buffers = {}
         # for name, buffer in self.model.named_buffers():
@@ -373,7 +403,7 @@ class Server(BasicServer):
             losses.append(loss)
         return evals, losses
 
-    def test_local_and_global_models(self, trained_models, round_num):
+    def test_local_and_global_models(self, trained_models, round_num, isTestGlobal=True):
         """
         测试本地训练完成后的模型精度和聚合后的全局模型精度
         
@@ -390,11 +420,10 @@ class Server(BasicServer):
         }
         
         if not self.test_data:
-            print("警告：没有测试数据，无法进行模型评估")
+            logging.warning("没有测试数据，无法进行模型评估")
             return results
         
         # 1. 测试本地训练完成后的模型精度
-        print(f"轮次 {round_num}: 测试本地训练完成后的模型精度...")
         for i, trained_model in enumerate(trained_models):
             trained_model.eval()
             loss = 0
@@ -415,37 +444,37 @@ class Server(BasicServer):
             results['local_models']['eval_metrics'].append(eval_metric)
             results['local_models']['losses'].append(loss)
             
-            print(f"  客户端 {i}: 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
+            logging.debug(f"客户端 {i}: 精度={eval_metric:.4f}, 损失={loss:.4f}")
         
         # 计算本地模型的平均性能
         if results['local_models']['eval_metrics']:
             avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
             avg_local_loss = sum(results['local_models']['losses']) / len(results['local_models']['losses'])
-            print(f"  本地模型平均: 精度 = {avg_local_metric:.4f}, 损失 = {avg_local_loss:.4f}")
+            logging.info(f"本地模型平均性能 - 精度: {avg_local_metric:.4f}, 损失: {avg_local_loss:.4f}")
         
-        # 2. 测试聚合后的全局模型精度
-        print(f"轮次 {round_num}: 测试聚合后的全局模型精度...")
-        self.model.eval()
-        loss = 0
-        eval_metric = 0
-        data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
-        
-        total_samples = 0
-        for batch_id, batch_data in enumerate(data_loader):
-            bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
-            loss += bmean_loss * len(batch_data[1])
-            eval_metric += bmean_eval_metric * len(batch_data[1])
-            total_samples += len(batch_data[1])
-        
-        if total_samples > 0:
-            eval_metric /= total_samples
-            loss /= total_samples
-        
-        results['global_model']['eval_metric'] = eval_metric
-        results['global_model']['loss'] = loss
-        
-        print(f"  全局模型: 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
-        
+        if isTestGlobal:
+            # 2. 测试聚合后的全局模型精度
+            self.model.eval()
+            loss = 0
+            eval_metric = 0
+            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+            
+            total_samples = 0
+            for batch_id, batch_data in enumerate(data_loader):
+                bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
+                loss += bmean_loss * len(batch_data[1])
+                eval_metric += bmean_eval_metric * len(batch_data[1])
+                total_samples += len(batch_data[1])
+            
+            if total_samples > 0:
+                eval_metric /= total_samples
+                loss /= total_samples
+            
+            results['global_model']['eval_metric'] = eval_metric
+            results['global_model']['loss'] = loss
+            
+            logging.info(f"聚合后 全局模型性能 - 精度: {eval_metric:.4f}, 损失: {loss:.4f}")
+    
         return results
 
 

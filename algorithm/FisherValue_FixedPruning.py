@@ -11,6 +11,10 @@ from torch.linalg import norm
 from main import logger
 import utils.fflow as flw
 import os
+import logging
+
+# 配置日志格式
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Server(BasicServer):
     def __init__(self, option, model, clients, test_data=None, validation=None):
@@ -19,7 +23,7 @@ class Server(BasicServer):
         # 固定的裁剪比例设置（10个客户端）：准确率最高裁剪0，最低裁剪0.6，依次递增
         self.fixed_pruning_ratios = [0.2, 0.5, 0.1, 0.3, 0.4, 0.25, 0.6, 0.45, 0.0, 0.55]
         
-        print(f"客户端裁剪比例设置: {self.fixed_pruning_ratios}")
+        logging.info(f"客户端裁剪比例设置: {[f'{r:.1%}' for r in self.fixed_pruning_ratios]}")
         
         # 神经元重要性评估间隔
         self.neuron_importance_eval_interval = option.get('neuron_eval_interval', 1)
@@ -43,7 +47,7 @@ class Server(BasicServer):
         # 用于存储相关系数的字典
         corrs_agg = {}
         for round in range(self.num_rounds + 1):
-            print("--------------Round {}--------------".format(round))
+            logging.info(f"--------------Round {round}--------------")
             logger.time_start('Time Cost')
             self.iterate(round)
             self.global_lr_scheduler(round)
@@ -51,7 +55,7 @@ class Server(BasicServer):
             if logger.check_if_log(round, self.eval_interval): 
                 logger.log(self, round=round, corrs_agg=corrs_agg)
 
-        print("=================End==================")
+        logging.info("==================== 训练完成 ====================")
         logger.time_end('Total Time Cost')
         # save results as .json file
         logger.save(os.path.join('fedtask', self.option['task'], 'record', flw.output_filename(self.option, self)))
@@ -62,26 +66,30 @@ class Server(BasicServer):
         核心迭代过程
         """
         self.selected_clients = [i for i in range(self.num_clients)]
-        print("开始第{}轮训练".format(t))
-        
+        logging.info(f"开始客户端本地训练")
         # 1. 客户端本地训练
         trained_models, losses = self.communicate(self.selected_clients)
-        print("开始进行动态聚合")
         
+        logging.info(f"开始动态聚合")
         # 2. 动态聚合模块：基于神经元频率的动态聚合
         self.dynamic_aggregation(trained_models, round_num=t)
         
+        logging.info(f"评估 客户端本地训练后 模型性能")
         # 测试本地训练完成后的模型精度和聚合后的全局模型精度
         test_results = self.test_local_and_global_models(trained_models, t)
-        print("开始进行Fisher信息矩阵评估")
         
         # 3. Fisher信息矩阵评估（每1轮评估一次）
         if t % self.neuron_importance_eval_interval == 0:
+            logging.info(f"开始Fisher信息矩阵评估")
             self.evaluate_neuron_importance_fisher()
-        print("开始进行子模型分配")
-        
+            
+        logging.info(f"开始子模型分配")
         # 4. 子模型分配模块：为每个客户端构建子模型（基于固定裁剪比例）
         self.allocate_submodels_with_fixed_pruning()
+        
+        # 5. 测试子模型精度
+        logging.info(f"开始测试子模型精度")
+        self.test_local_and_global_models(self.client_submodels, t, isTestGlobal=False)
         return
 
     def evaluate_neuron_importance_fisher(self):
@@ -95,7 +103,7 @@ class Server(BasicServer):
         
         # 如果没有验证数据，则无法计算Fisher信息矩阵
         if not self.validation:
-            print("警告：没有验证数据，无法计算Fisher信息矩阵")
+            logging.warning(" 没有验证数据，无法计算Fisher信息矩阵")
             return
         
         # 准备用于计算Fisher信息矩阵的数据
@@ -107,10 +115,10 @@ class Server(BasicServer):
                 break
         
         if not samples:
-            print("警告：没有足够的样本计算Fisher信息矩阵")
+            logging.warning("没有足够的样本计算Fisher信息矩阵")
             return
         
-        print(f"使用{len(samples)}个批次（约{len(samples) * self.fisher_batch_size}个样本）计算Fisher信息矩阵")
+        logging.info(f"使用 {len(samples)} 个批次（约 {len(samples) * self.fisher_batch_size} 个样本）计算Fisher信息矩阵")
         
         # 构建神经元到参数的映射
         neuron_to_param_mapping = {}  # 记录每个神经元对应的参数索引
@@ -190,7 +198,7 @@ class Server(BasicServer):
         if fisher_diag_accumulator is not None and num_batches > 0:
             fisher_diag = fisher_diag_accumulator / num_batches
         else:
-            print("警告：Fisher信息矩阵计算失败，将使用权重幅度作为替代")
+            logging.warning("Fisher信息矩阵计算失败")
             return
         
         # 为每个神经元计算Fisher信息矩阵对角线元素的平均值
@@ -206,7 +214,7 @@ class Server(BasicServer):
             if self.neuron_importance.sum() == 0:
                 # 如果所有重要性都为0，则赋予一个较小的重要性
                 self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
-                print("警告：所有神经元Fisher值为零，使用较小值代替")
+                logging.warning("所有神经元Fisher值为零，使用默认小值代替")
             else:
                 # 归一化到0-100范围
                 self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
@@ -214,9 +222,10 @@ class Server(BasicServer):
             # 计算重要性百分位数，用于子模型构建
             # 注意：这里使用正序排序（从小到大），优先裁剪Fisher值较小的神经元
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
-            print(f"神经元Fisher评估完成，共{len(self.neuron_importance)}个神经元")
-            print(f"Fisher值范围: 最小={self.neuron_importance.min().item():.6f}, 最大={self.neuron_importance.max().item():.6f}")
-            print(f"Fisher值均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
+            
+            logging.info(f"Fisher评估完成 - 总神经元数: {len(self.neuron_importance)}, "
+                        f"Fisher值范围: [{self.neuron_importance.min().item():.6f}, {self.neuron_importance.max().item():.6f}], "
+                        f"均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
 
 
     def allocate_submodels_with_fixed_pruning(self):
@@ -228,6 +237,7 @@ class Server(BasicServer):
             # 如果没有神经元重要性信息，直接使用全局模型
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
+            logging.warning("没有神经元重要性信息，使用完整全局模型")
             return
         
         # 获取按神经元重要性排序的神经元索引（从最小到最大，正序）
@@ -242,12 +252,13 @@ class Server(BasicServer):
             if num_neurons_to_prune >= total_neurons:
                 # 如果裁剪比例过大，至少保留一个重要性最大的神经元
                 neurons_to_keep = [sorted_neuron_indices[-1]]
-                print(f"警告：客户端{i}的裁剪比例({pruning_ratio})过大，只保留重要性最大的神经元")
+                logging.warning(f"客户端 {i} 裁剪比例({pruning_ratio:.1%})过大，只保留重要性最大的神经元")
             else:
                 # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
                 neurons_to_keep = sorted_neuron_indices[num_neurons_to_prune:]
             
-            print(f"客户端{i}: 裁剪比例={pruning_ratio:.1%}, 裁剪{num_neurons_to_prune}个神经元, 保留{len(neurons_to_keep)}个神经元")
+            logging.debug(f"客户端 {i}: 裁剪比例={pruning_ratio:.1%}, "
+                         f"裁剪 {num_neurons_to_prune} 个神经元, 保留 {len(neurons_to_keep)} 个神经元")
             
             # 构建子模型（通过掩码实现）
             submodel = copy.deepcopy(self.model)
@@ -333,10 +344,11 @@ class Server(BasicServer):
                 aggregated_params[name] = weighted_sum
 
         # 检查聚合后的参数是否合理
-        if torch.isnan(aggregated_params[name]).any():
-            print(f"警告：参数 {name} 聚合后包含NaN值")
-        if torch.isinf(aggregated_params[name]).any():
-            print(f"警告：参数 {name} 聚合后包含无穷值")
+        for name in aggregated_params:
+            if torch.isnan(aggregated_params[name]).any():
+                logging.error(f"参数 {name} 聚合后包含NaN值")
+            if torch.isinf(aggregated_params[name]).any():
+                logging.error(f"参数 {name} 聚合后包含无穷值")
 
         # 更新全局模型
         for name, param in self.model.named_parameters():
@@ -391,7 +403,7 @@ class Server(BasicServer):
             losses.append(loss)
         return evals, losses
 
-    def test_local_and_global_models(self, trained_models, round_num):
+    def test_local_and_global_models(self, trained_models, round_num, isTestGlobal=True):
         """
         测试本地训练完成后的模型精度和聚合后的全局模型精度
         
@@ -408,11 +420,10 @@ class Server(BasicServer):
         }
         
         if not self.test_data:
-            print("警告：没有测试数据，无法进行模型评估")
+            logging.warning("没有测试数据，无法进行模型评估")
             return results
         
         # 1. 测试本地训练完成后的模型精度
-        print(f"轮次 {round_num}: 测试本地训练完成后的模型精度...")
         for i, trained_model in enumerate(trained_models):
             trained_model.eval()
             loss = 0
@@ -433,36 +444,37 @@ class Server(BasicServer):
             results['local_models']['eval_metrics'].append(eval_metric)
             results['local_models']['losses'].append(loss)
             
-            print(f"  客户端 {i} (裁剪比例{self.fixed_pruning_ratios[i]:.1%}): 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
+            logging.debug(f"客户端 {i} (裁剪比例{self.fixed_pruning_ratios[i]:.1%}): "
+                         f"精度={eval_metric:.4f}, 损失={loss:.4f}")
         
         # 计算本地模型的平均性能
         if results['local_models']['eval_metrics']:
             avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
             avg_local_loss = sum(results['local_models']['losses']) / len(results['local_models']['losses'])
-            print(f"  本地模型平均: 精度 = {avg_local_metric:.4f}, 损失 = {avg_local_loss:.4f}")
+            logging.info(f"本地模型平均性能 - 精度: {avg_local_metric:.4f}, 损失: {avg_local_loss:.4f}")
         
-        # 2. 测试聚合后的全局模型精度
-        print(f"轮次 {round_num}: 测试聚合后的全局模型精度...")
-        self.model.eval()
-        loss = 0
-        eval_metric = 0
-        data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
-        
-        total_samples = 0
-        for batch_id, batch_data in enumerate(data_loader):
-            bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
-            loss += bmean_loss * len(batch_data[1])
-            eval_metric += bmean_eval_metric * len(batch_data[1])
-            total_samples += len(batch_data[1])
-        
-        if total_samples > 0:
-            eval_metric /= total_samples
-            loss /= total_samples
-        
-        results['global_model']['eval_metric'] = eval_metric
-        results['global_model']['loss'] = loss
-        
-        print(f"  全局模型: 精度 = {eval_metric:.4f}, 损失 = {loss:.4f}")
+        if isTestGlobal:
+            # 2. 测试聚合后的全局模型精度
+            self.model.eval()
+            loss = 0
+            eval_metric = 0
+            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+            
+            total_samples = 0
+            for batch_id, batch_data in enumerate(data_loader):
+                bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
+                loss += bmean_loss * len(batch_data[1])
+                eval_metric += bmean_eval_metric * len(batch_data[1])
+                total_samples += len(batch_data[1])
+            
+            if total_samples > 0:
+                eval_metric /= total_samples
+                loss /= total_samples
+            
+            results['global_model']['eval_metric'] = eval_metric
+            results['global_model']['loss'] = loss
+            
+            logging.info(f"聚合后 全局模型性能 - 精度: {eval_metric:.4f}, 损失: {loss:.4f}")
         
         return results
 
