@@ -15,7 +15,7 @@ python main.py \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \
-    --neuron_eval_interval 10
+    --neuron_eval_interval 1
 
 # 运行新的固定裁剪算法
 echo "运行WeightValue_FixedPruning算法..."
@@ -30,6 +30,6 @@ python main.py \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \
-    --neuron_eval_interval 10
+    --neuron_eval_interval 1
 
 echo "实验完成！"

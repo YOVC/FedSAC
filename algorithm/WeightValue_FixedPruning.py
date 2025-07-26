@@ -265,30 +265,30 @@ class Server(BasicServer):
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
         
-        # 聚合BatchNorm层的统计信息（running_mean和running_var）
-        aggregated_buffers = {}
-        for name, buffer in self.model.named_buffers():
-            if 'running_mean' in name or 'running_var' in name:
-                weighted_sum = torch.zeros_like(buffer)
+        # # 聚合BatchNorm层的统计信息（running_mean和running_var）
+        # aggregated_buffers = {}
+        # for name, buffer in self.model.named_buffers():
+        #     if 'running_mean' in name or 'running_var' in name:
+        #         weighted_sum = torch.zeros_like(buffer)
                 
-                # 对于BatchNorm统计信息，始终使用简单平均聚合
-                for i, trained_model in enumerate(client_trained_models):
-                    trained_buffer = dict(trained_model.named_buffers())[name]
-                    weighted_sum += trained_buffer
+        #         # 对于BatchNorm统计信息，始终使用简单平均聚合
+        #         for i, trained_model in enumerate(client_trained_models):
+        #             trained_buffer = dict(trained_model.named_buffers())[name]
+        #             weighted_sum += trained_buffer
                 
-                aggregated_buffers[name] = weighted_sum / len(client_trained_models)
-            elif 'num_batches_tracked' in name:
-                # 对于num_batches_tracked，取最大值
-                max_batches = torch.zeros_like(buffer)
-                for i, trained_model in enumerate(client_trained_models):
-                    trained_buffer = dict(trained_model.named_buffers())[name]
-                    max_batches = torch.max(max_batches, trained_buffer)
-                aggregated_buffers[name] = max_batches
+        #         aggregated_buffers[name] = weighted_sum / len(client_trained_models)
+        #     elif 'num_batches_tracked' in name:
+        #         # 对于num_batches_tracked，取最大值
+        #         max_batches = torch.zeros_like(buffer)
+        #         for i, trained_model in enumerate(client_trained_models):
+        #             trained_buffer = dict(trained_model.named_buffers())[name]
+        #             max_batches = torch.max(max_batches, trained_buffer)
+        #         aggregated_buffers[name] = max_batches
         
-        # 更新全局模型的缓冲区
-        for name, buffer in self.model.named_buffers():
-            if name in aggregated_buffers:
-                buffer.data = aggregated_buffers[name]
+        # # 更新全局模型的缓冲区
+        # for name, buffer in self.model.named_buffers():
+        #     if name in aggregated_buffers:
+        #         buffer.data = aggregated_buffers[name]
         
     def pack(self, client_id):
         """
