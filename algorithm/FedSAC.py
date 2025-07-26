@@ -22,7 +22,7 @@ class Server(BasicServer):
         
         # 客户端声誉和贡献度
         self.client_reputations = [0.0 for _ in range(len(self.clients))]
-        self.client_contributions = [0.3102, 0.387, 0.4048, 0.1554, 0.4775, 0.4996, 0.5291, 0.515, 0.5361, 0.5653]
+        self.client_contributions = [0.3204, 0.2446, 0.3209, 0.273, 0.2628, 0.2961, 0.2412, 0.2575, 0.3283, 0.2396]
         
         # 神经元重要性分数
         self.neuron_importance = None
