@@ -293,26 +293,7 @@ class Server(BasicServer):
     def pack(self, client_id):
         """
         Pack the necessary information for the client's local training.
-        """
-        # 检查是否有有效的客户端子模型
-        if (not hasattr(self, 'client_submodels') or 
-            client_id >= len(self.client_submodels) or
-            self.client_submodels[client_id] is None):
-            # 如果没有子模型，返回全局模型的副本
-            return {"model": copy.deepcopy(self.model)}
-        
-        # 检查子模型是否为空（所有参数都为0）
-        submodel = self.client_submodels[client_id]
-        has_nonzero_params = False
-        for param in submodel.parameters():
-            if torch.any(param != 0):
-                has_nonzero_params = True
-                break
-        
-        if not has_nonzero_params:
-            # 如果子模型的所有参数都为0，返回全局模型的副本
-            return {"model": copy.deepcopy(self.model)}
-        
+        """  
         return {"model": copy.deepcopy(self.client_submodels[client_id])}
 
     def test(self, model=None):
