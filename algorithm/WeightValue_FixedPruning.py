@@ -434,6 +434,7 @@ class Client(BasicClient):
         """
         Standard local training procedure. Train the transmitted model with local training dataset.
         """
+        logger.time_start('Train Time Cost')
         model.train()
         data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
         optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
@@ -447,6 +448,7 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
+        logger.time_end('Train Time Cost')
         return
 
     def test(self, model, dataflag='valid'):

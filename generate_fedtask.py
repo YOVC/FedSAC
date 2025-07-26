@@ -16,6 +16,13 @@ def read_option():
     except IOError as msg: parser.error(str(msg))
     return option
 
+def format_class_distribution(class_count_dict, all_class_labels):
+    """格式化类别分布，按类别顺序排列，缺失的类别显示为0"""
+    ordered_dict = {}
+    for label in all_class_labels:
+        ordered_dict[label] = class_count_dict.get(label, 0)
+    return ordered_dict
+
 def analyze_data_distribution(generator):
     """分析并记录数据分布统计信息"""
     print('-----------------------------------------------------')
@@ -83,13 +90,18 @@ def analyze_data_distribution(generator):
         combined_class_count.update(train_class_count)
         combined_class_count.update(valid_class_count)
         
+        # 格式化类别分布（按顺序排列，缺失类别显示为0）
+        formatted_train_dist = format_class_distribution(dict(train_class_count), class_labels)
+        formatted_valid_dist = format_class_distribution(dict(valid_class_count), class_labels)
+        formatted_combined_dist = format_class_distribution(dict(combined_class_count), class_labels)
+        
         stats['clients_stats'][client_name] = {
             'train_samples': train_total,
             'valid_samples': valid_total,
             'total_samples': total_samples,
-            'train_class_distribution': dict(train_class_count),
-            'valid_class_distribution': dict(valid_class_count),
-            'combined_class_distribution': dict(combined_class_count)
+            'train_class_distribution': formatted_train_dist,
+            'valid_class_distribution': formatted_valid_dist,
+            'combined_class_distribution': formatted_combined_dist
         }
         
         stats['total_train_samples'] += train_total
@@ -100,9 +112,9 @@ def analyze_data_distribution(generator):
         print(f"  训练样本数: {train_total}")
         print(f"  验证样本数: {valid_total}")
         print(f"  总样本数: {total_samples}")
-        print(f"  训练集类别分布: {dict(train_class_count)}")
-        print(f"  验证集类别分布: {dict(valid_class_count)}")
-        print(f"  总体类别分布: {dict(combined_class_count)}")
+        print(f"  训练集类别分布: {formatted_train_dist}")
+        print(f"  验证集类别分布: {formatted_valid_dist}")
+        print(f"  总体类别分布: {formatted_combined_dist}")
         print()
     
     # 计算全局统计
@@ -118,8 +130,10 @@ def analyze_data_distribution(generator):
         client_combined = stats['clients_stats'][client_name]['combined_class_distribution']
         global_class_count.update(client_combined)
     
-    stats['class_distribution_summary'] = dict(global_class_count)
-    print(f"  客户端总体类别分布: {dict(global_class_count)}")
+    # 格式化全局类别分布
+    formatted_global_dist = format_class_distribution(dict(global_class_count), class_labels)
+    stats['class_distribution_summary'] = formatted_global_dist
+    print(f"  客户端总体类别分布: {formatted_global_dist}")
     
     # 计算数据分布的不平衡程度
     client_sample_counts = [stats['clients_stats'][name]['total_samples'] for name in feddata['client_names']]

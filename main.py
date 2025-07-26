@@ -28,18 +28,18 @@ class MyLogger(flw.Logger):
                 "train_losses_clients":[],  # 每个客户端的训练损失
                 "test_accs":[],        # 测试准确率
                 "test_losses":[],      # 测试损失
-                "valid_losses":[],     # 验证损失
+                # "valid_losses":[],     # 验证损失
             }
         # 获取测试集上的性能指标
         test_metric, test_loss = server.test()
         # 获取客户端本地验证集上的性能指标
-        valid_metrics, valid_losses = server.test_on_clients(self.current_round, 'valid')
+        # valid_metrics, valid_losses = server.test_on_clients(self.current_round, 'valid')
         # 获取客户端本地训练集上的性能指标
         train_metrics, train_losses = server.test_on_clients(self.current_round, 'train')
         # 计算加权平均的训练损失（按客户端数据量加权） TODO client_vols是什么
         self.output['train_losses'].append(1.0*sum([ck * closs for ck, closs in zip(server.client_vols, train_losses)])/server.data_vol)
         # 计算加权平均的验证损失
-        self.output['valid_losses'].append(1.0*sum([ck * closs for ck, closs in zip(server.client_vols, valid_losses)])/server.data_vol)
+        # self.output['valid_losses'].append(1.0*sum([ck * closs for ck, closs in zip(server.client_vols, valid_losses)])/server.data_vol)
         # 记录每个客户端的训练损失
         self.output['train_losses_clients'].append(train_losses)
 
@@ -48,7 +48,7 @@ class MyLogger(flw.Logger):
         self.output['test_losses'].append(test_loss)
         # 打印当前轮次的性能指标
         print("Training Loss:", self.output['train_losses'][-1])
-        print("valid Loss:", self.output['valid_losses'][-1])
+        # print("valid Loss:", self.output['valid_losses'][-1])
         print("Testing Loss:", self.output['test_losses'][-1])
         print("Testing Accuracy:", self.output['test_accs'][-1])  
         print("Mean of testing Accuracy:", np.mean(self.output['test_accs'][-1]))
@@ -71,7 +71,7 @@ class MyLogger(flw.Logger):
         TensorWriter.add_scalar('Mean of testing Accuracy', np.mean(self.output['test_accs'][-1]), round)  # 记录平均测试准确率
         TensorWriter.add_scalar('Max of testing Accuracy', np.max(self.output['test_accs'][-1]), round)  # 记录最大测试准确率
         TensorWriter.add_scalar('corrs', corrs[0], round)  # 记录相关系数（公平性指标）
-        TensorWriter.add_scalar('valid_losses', self.output['valid_losses'][-1], round)  # 记录验证损失
+        # TensorWriter.add_scalar('valid_losses', self.output['valid_losses'][-1], round)  # 记录验证损失
 
         # 存储当前轮次的相关系数
         corrs_agg[round] = corrs[0]

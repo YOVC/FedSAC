@@ -83,6 +83,7 @@ class Client(BasicClient):
             model: the global model
         :return
         """
+        logger.time_start('Train Time Cost')
         model.train()
         data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
         optimizer = self.calculator.get_optimizer(self.optimizer_name, model, lr = self.learning_rate, weight_decay=self.weight_decay, momentum=self.momentum)
@@ -92,4 +93,5 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
+        logger.time_end('Train Time Cost')
         return
