@@ -173,7 +173,7 @@ class DefaultTaskGen(BasicTaskGen):
         print('-----------------------------------------------------')
         print('Partitioning data...')
         local_datas = self.partition()
-        train_cidxs, valid_cidxs = self.local_holdout(local_datas, rate=0.8, shuffle=True)
+        train_cidxs, valid_cidxs = self.local_holdout(local_datas, rate=1, shuffle=True)
         print('Done.')
         # save task infomation as .json file and the federated dataset
         print('-----------------------------------------------------')
