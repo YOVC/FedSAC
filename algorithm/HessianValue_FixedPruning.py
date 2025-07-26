@@ -145,8 +145,14 @@ class Server(BasicServer):
             for name, module in self.model.named_modules():
                 if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
                     layer_importance = self._compute_layer_fisher_importance(module, sample_batch)
-                    neuron_importance.extend(layer_importance)
+                    if layer_importance:  # 确保layer_importance不为空
+                        neuron_importance.extend(layer_importance)
             
+            # 检查是否成功计算出重要性分数
+            if not neuron_importance:
+                print("警告：Fisher方法未能计算出任何神经元重要性分数")
+                return None
+                
             return neuron_importance
             
         except Exception as e:
@@ -164,14 +170,24 @@ class Server(BasicServer):
             for neuron_idx in range(module.out_features):
                 weight_param = module.weight[neuron_idx, :].clone().detach().requires_grad_(True)
                 fisher_score = self._compute_fisher_score(weight_param, sample_batch)
-                layer_importance.append(fisher_score)
-                
+                # 确保fisher_score是有效的数值
+                if fisher_score is not None and not np.isnan(fisher_score):
+                    layer_importance.append(fisher_score)
+                else:
+                    print(f"Linear警告：Fisher信息矩阵计算失败，跳过神经元 {neuron_idx}")
+                    layer_importance.append(0.0)
+                    
         elif isinstance(module, torch.nn.Conv2d):
             # 卷积层：计算每个输出通道的重要性
             for neuron_idx in range(module.out_channels):
                 weight_param = module.weight[neuron_idx, :, :, :].clone().detach().requires_grad_(True)
                 fisher_score = self._compute_fisher_score(weight_param, sample_batch)
-                layer_importance.append(fisher_score)
+                # 确保fisher_score是有效的数值
+                if fisher_score is not None and not np.isnan(fisher_score):
+                    layer_importance.append(fisher_score)
+                else:
+                    print(f"Conv2d警告：Fisher信息矩阵计算失败，跳过神经元 {neuron_idx}")
+                    layer_importance.append(0.0)
         
         return layer_importance
 
@@ -180,8 +196,8 @@ class Server(BasicServer):
         计算单个参数的Fisher信息分数
         """
         try:
-            # 计算损失
-            _, loss = self.calculator.test(self.model, batch_data)
+            # 计算损失 - 使用get_loss方法获取tensor格式的loss
+            loss = self.calculator.get_loss(self.model, batch_data)
             # 计算梯度
             grad = torch.autograd.grad(loss, param, create_graph=True, retain_graph=True)[0]
             # Fisher信息矩阵对角线元素 = 梯度的平方和
@@ -190,7 +206,7 @@ class Server(BasicServer):
             
         except Exception as e:
             print(f"Fisher信息矩阵单个参数计算失败: {e}")
-            return None
+            return 0.0  # 返回0.0而不是None，避免后续处理问题
 
     def _compute_traditional_hessian_importance(self):
         """
@@ -252,9 +268,9 @@ class Server(BasicServer):
         for batch_data in data_loader:
             batch_size = len(batch_data[1])
             try:
-                # 前向传播计算损失
+                # 前向传播计算损失 - 使用get_loss方法获取tensor格式的loss
                 self.model.zero_grad()
-                _, loss = self.calculator.test(self.model, batch_data)
+                loss = self.calculator.get_loss(self.model, batch_data)
                 
                 # 计算一阶梯度
                 params_to_compute = [target_weight]
@@ -551,6 +567,7 @@ class Client(BasicClient):
         """
         Standard local training procedure. Train the transmitted model with local training dataset.
         """
+        logger.time_start('train Time Cost')
         model.train()
         data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
         optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
@@ -564,6 +581,7 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
+        logger.time_end('train Time Cost')
         return
 
     def test(self, model, dataflag='valid'):
