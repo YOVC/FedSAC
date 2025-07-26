@@ -246,11 +246,6 @@ class Server(BasicServer):
         动态聚合模块
         基于神经元被聚合频率的加权机制
         """
-        # 初始化聚合频率统计
-        if self.neuron_aggregation_frequency is None:
-            self.neuron_aggregation_frequency = {}
-            for name, param in self.model.named_parameters():
-                self.neuron_aggregation_frequency[name] = torch.zeros_like(param)
         # 计算当前轮次每个参数的聚合频率
         current_frequency = {}
         for name, param in self.model.named_parameters():
@@ -267,9 +262,7 @@ class Server(BasicServer):
                     for name, param in allocated_submodel.named_parameters():
                         mask = (param != 0).float()
                         current_frequency[name] += mask
-        # 更新全局聚合频率
-        for name in current_frequency:
-            self.neuron_aggregation_frequency[name] += current_frequency[name]
+
         # 动态聚合：频率越高的参数权重越小
         aggregated_params = {}
         for name, param in self.model.named_parameters():
@@ -280,12 +273,6 @@ class Server(BasicServer):
                     trained_param = dict(trained_model.named_parameters())[name]
                     weighted_sum += trained_param
                 aggregated_params[name] = weighted_sum / len(client_trained_models)
-                
-                # 检查聚合后的参数是否合理
-                if torch.isnan(aggregated_params[name]).any():
-                    print(f"警告：参数 {name} 聚合后包含NaN值")
-                if torch.isinf(aggregated_params[name]).any():
-                    print(f"警告：参数 {name} 聚合后包含无穷值")
                     
             else:
                 # 后续轮次：使用训练后的模型进行聚合，但权重基于上一轮分配的子模型掩码
@@ -301,58 +288,46 @@ class Server(BasicServer):
                     
                     weighted_sum += trained_param * weight
                 aggregated_params[name] = weighted_sum
+        
+        # 检查聚合后的参数是否合理
+        if torch.isnan(aggregated_params[name]).any():
+            print(f"警告：参数 {name} 聚合后包含NaN值")
+        if torch.isinf(aggregated_params[name]).any():
+            print(f"警告：参数 {name} 聚合后包含无穷值")
+
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
         
-        # 聚合BatchNorm层的统计信息（running_mean和running_var）
-        aggregated_buffers = {}
-        for name, buffer in self.model.named_buffers():
-            if 'running_mean' in name or 'running_var' in name:
-                weighted_sum = torch.zeros_like(buffer)
+        # # 聚合BatchNorm层的统计信息（running_mean和running_var）
+        # aggregated_buffers = {}
+        # for name, buffer in self.model.named_buffers():
+        #     if 'running_mean' in name or 'running_var' in name:
+        #         weighted_sum = torch.zeros_like(buffer)
                 
-                # 对于BatchNorm统计信息，始终使用简单平均聚合
-                for i, trained_model in enumerate(client_trained_models):
-                    trained_buffer = dict(trained_model.named_buffers())[name]
-                    weighted_sum += trained_buffer
+        #         # 对于BatchNorm统计信息，始终使用简单平均聚合
+        #         for i, trained_model in enumerate(client_trained_models):
+        #             trained_buffer = dict(trained_model.named_buffers())[name]
+        #             weighted_sum += trained_buffer
                 
-                aggregated_buffers[name] = weighted_sum / len(client_trained_models)
-            elif 'num_batches_tracked' in name:
-                # 对于num_batches_tracked，取最大值
-                max_batches = torch.zeros_like(buffer)
-                for i, trained_model in enumerate(client_trained_models):
-                    trained_buffer = dict(trained_model.named_buffers())[name]
-                    max_batches = torch.max(max_batches, trained_buffer)
-                aggregated_buffers[name] = max_batches
+        #         aggregated_buffers[name] = weighted_sum / len(client_trained_models)
+        #     elif 'num_batches_tracked' in name:
+        #         # 对于num_batches_tracked，取最大值
+        #         max_batches = torch.zeros_like(buffer)
+        #         for i, trained_model in enumerate(client_trained_models):
+        #             trained_buffer = dict(trained_model.named_buffers())[name]
+        #             max_batches = torch.max(max_batches, trained_buffer)
+        #         aggregated_buffers[name] = max_batches
         
-        # 更新全局模型的缓冲区
-        for name, buffer in self.model.named_buffers():
-            if name in aggregated_buffers:
-                buffer.data = aggregated_buffers[name]
+        # # 更新全局模型的缓冲区
+        # for name, buffer in self.model.named_buffers():
+        #     if name in aggregated_buffers:
+        #         buffer.data = aggregated_buffers[name]
         
     def pack(self, client_id):
         """
         Pack the necessary information for the client's local training.
         """
-        # 检查是否有有效的客户端子模型
-        if (not hasattr(self, 'client_submodels') or 
-            client_id >= len(self.client_submodels) or
-            self.client_submodels[client_id] is None):
-            # 如果没有子模型，返回全局模型的副本
-            return {"model": copy.deepcopy(self.model)}
-        
-        # 检查子模型是否为空（所有参数都为0）
-        submodel = self.client_submodels[client_id]
-        has_nonzero_params = False
-        for param in submodel.parameters():
-            if torch.any(param != 0):
-                has_nonzero_params = True
-                break
-        
-        if not has_nonzero_params:
-            # 如果子模型的所有参数都为0，返回全局模型的副本
-            return {"model": copy.deepcopy(self.model)}
-        
         return {"model": copy.deepcopy(self.client_submodels[client_id])}
 
     def test(self, model=None):
