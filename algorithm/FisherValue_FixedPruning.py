@@ -21,16 +21,19 @@ class Server(BasicServer):
         
         print(f"客户端裁剪比例设置: {self.fixed_pruning_ratios}")
         
-        # 权重幅度评估间隔
+        # 神经元重要性评估间隔
         self.neuron_importance_eval_interval = option.get('neuron_eval_interval', 1)
         
-        # 神经元权重幅度分数
+        # 神经元重要性分数
         self.neuron_importance = None
         self.neuron_importance_percentiles = None
         
         # 为每个客户端维护子模型
         self.client_submodels = [copy.deepcopy(model) for _ in range(len(self.clients))]
         
+        # Fisher信息矩阵计算相关参数
+        self.fisher_batch_size = option.get('fisher_batch_size', 32)  # 用于计算Fisher信息矩阵的批次大小
+        self.fisher_samples = option.get('fisher_samples', 5000)  # 用于计算Fisher信息矩阵的样本数量
         
     def run(self):
         """
@@ -70,69 +73,131 @@ class Server(BasicServer):
         
         # 测试本地训练完成后的模型精度和聚合后的全局模型精度
         test_results = self.test_local_and_global_models(trained_models, t)
-        print("开始进行权重幅度评估")
+        print("开始进行Fisher信息矩阵评估")
         
-        # 3. 权重幅度评估（每1轮评估一次）
+        # 3. Fisher信息矩阵评估（每1轮评估一次）
         if t % self.neuron_importance_eval_interval == 0:
-            self.evaluate_neuron_importance()
+            self.evaluate_neuron_importance_fisher()
         print("开始进行子模型分配")
         
         # 4. 子模型分配模块：为每个客户端构建子模型（基于固定裁剪比例）
         self.allocate_submodels_with_fixed_pruning()
         return
 
-    def evaluate_neuron_importance(self):
+    def evaluate_neuron_importance_fisher(self):
         """
         神经元重要性评估模块
-        使用权重幅度（Weight Magnitude）方法评估每个神经元的重要性
+        使用Fisher信息矩阵对角线元素评估每个神经元的重要性
+        Fisher信息矩阵是梯度的外积的期望，可以近似为梯度平方的期望
+        数值越大表示该参数对损失函数的影响越大，即神经元越重要
         """
         self.model.eval()
         
-        # 计算每个神经元的重要性（基于标准化权重幅度）
-        neuron_importance = []
+        # 如果没有验证数据，则无法计算Fisher信息矩阵
+        if not self.validation:
+            print("警告：没有验证数据，无法计算Fisher信息矩阵")
+            return
         
-        # 遍历模型的每一层
+        # 准备用于计算Fisher信息矩阵的数据
+        data_loader = self.calculator.get_data_loader(self.validation, batch_size=self.fisher_batch_size)
+        samples = []
+        for batch_id, batch_data in enumerate(data_loader):
+            samples.append(batch_data)
+            if len(samples) * self.fisher_batch_size >= self.fisher_samples:
+                break
+        
+        if not samples:
+            print("警告：没有足够的样本计算Fisher信息矩阵")
+            return
+        
+        print(f"使用{len(samples)}个批次（约{len(samples) * self.fisher_batch_size}个样本）计算Fisher信息矩阵")
+        
+        # 构建神经元到参数的映射
+        neuron_to_param_mapping = {}  # 记录每个神经元对应的参数索引
+        neuron_idx = 0
+        param_index = 0
+        
         for layer_idx, (name, module) in enumerate(self.model.named_modules()):
             if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
-                # 对于线性层和卷积层，计算每个神经元的重要性
                 if isinstance(module, torch.nn.Linear):
                     num_neurons = module.out_features
-                    num_params_per_neuron = module.in_features  # 每个神经元的权重参数数量
-                    
-                    # 计算每个输出神经元的标准化权重幅度
-                    for neuron_idx in range(num_neurons):
-                        # 计算该神经元所有输入连接权重的L2范数
-                        weight_magnitude = torch.norm(module.weight.data[neuron_idx, :], p=2).item()
-                        
-                        # 标准化：除以参数数量的平方根
-                        normalized_weight_magnitude = weight_magnitude / math.sqrt(num_params_per_neuron)
-                        
-                        # 如果有偏置项，也加入计算（偏置项不需要标准化，因为只有1个参数）
-                        if module.bias is not None:
-                            bias_magnitude = abs(module.bias.data[neuron_idx].item())
-                            normalized_weight_magnitude += bias_magnitude
-                        
-                        neuron_importance.append(normalized_weight_magnitude)
-                        
+                    params_per_neuron = module.in_features + (1 if module.bias is not None else 0)
                 elif isinstance(module, torch.nn.Conv2d):
                     num_neurons = module.out_channels
-                    # 每个神经元（输出通道）的权重参数数量
-                    num_params_per_neuron = module.in_channels * module.kernel_size[0] * module.kernel_size[1]
-                    
-                    # 计算每个输出通道的标准化权重幅度
-                    for neuron_idx in range(num_neurons):
-                        # 计算该通道所有卷积核权重的L2范数
-                        weight_magnitude = torch.norm(module.weight.data[neuron_idx, :, :, :], p=2).item()
+                    params_per_neuron = module.in_channels * module.kernel_size[0] * module.kernel_size[1] + (1 if module.bias is not None else 0)
+                
+                for i in range(num_neurons):
+                    neuron_to_param_mapping[neuron_idx + i] = list(range(param_index, param_index + params_per_neuron))
+                    param_index += params_per_neuron
+                
+                neuron_idx += num_neurons
+        
+        # 初始化Fisher信息矩阵对角线元素累加器
+        fisher_diag_accumulator = None
+        num_batches = 0
+        
+        # 计算Fisher信息矩阵对角线元素（梯度平方的期望）
+        for batch_data in samples:
+            inputs, targets = batch_data
+            inputs, targets = inputs.to(self.model.get_device()), targets.to(self.model.get_device())
+            
+            # 计算损失
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            log_probs = F.log_softmax(outputs, dim=1)
+            
+            # 对每个样本单独计算梯度
+            batch_size = inputs.size(0)
+            for i in range(batch_size):
+                # 获取当前样本的对数概率
+                log_prob = log_probs[i, targets[i]]
+                
+                # 计算梯度
+                self.model.zero_grad()
+                log_prob.backward(retain_graph=(i < batch_size-1))
+                
+                # 收集Linear和Conv2d层的参数梯度（排除BatchNorm2d等其他层）
+                all_grads = []
+                for name, module in self.model.named_modules():
+                    if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
+                        # 收集权重梯度
+                        if module.weight.grad is not None:
+                            all_grads.append(module.weight.grad.detach().view(-1))
+                        else:
+                            all_grads.append(torch.zeros(module.weight.numel(), device=module.weight.device))
                         
-                        # 标准化：除以参数数量的平方根
-                        normalized_weight_magnitude = weight_magnitude / math.sqrt(num_params_per_neuron)
-                        
-                        # 如果有偏置项，也加入计算（偏置项不需要标准化，因为只有1个参数）
+                        # 收集偏置梯度（如果存在）
                         if module.bias is not None:
-                            bias_magnitude = abs(module.bias.data[neuron_idx].item())
-                            normalized_weight_magnitude += bias_magnitude
-                        
-                        neuron_importance.append(normalized_weight_magnitude)
+                            if module.bias.grad is not None:
+                                all_grads.append(module.bias.grad.detach().view(-1))
+                            else:
+                                all_grads.append(torch.zeros(module.bias.numel(), device=module.bias.device))
+                
+                all_grads = torch.cat(all_grads)
+                
+                # 计算梯度的平方（Fisher信息矩阵对角线元素的估计）
+                fisher_diag = all_grads.pow(2)
+                
+                # 累加到Fisher信息矩阵对角线元素累加器
+                if fisher_diag_accumulator is None:
+                    fisher_diag_accumulator = fisher_diag
+                else:
+                    fisher_diag_accumulator += fisher_diag
+                
+                num_batches += 1
+        
+        # 计算Fisher信息矩阵对角线元素的平均值
+        if fisher_diag_accumulator is not None and num_batches > 0:
+            fisher_diag = fisher_diag_accumulator / num_batches
+        else:
+            print("警告：Fisher信息矩阵计算失败，将使用权重幅度作为替代")
+            return
+        
+        # 为每个神经元计算Fisher信息矩阵对角线元素的平均值
+        neuron_importance = []
+        for neuron_id, param_indices in neuron_to_param_mapping.items():
+            neuron_fisher = torch.mean(fisher_diag[param_indices]).item()
+            neuron_importance.append(neuron_fisher)
         
         # 转换为tensor并归一化重要性分数
         self.neuron_importance = torch.tensor(neuron_importance)
@@ -141,30 +206,31 @@ class Server(BasicServer):
             if self.neuron_importance.sum() == 0:
                 # 如果所有重要性都为0，则赋予一个较小的重要性
                 self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
-                print("警告：所有神经元权重幅度为零，使用较小值代替")
+                print("警告：所有神经元Fisher值为零，使用较小值代替")
             else:
                 # 归一化到0-100范围
                 self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             
             # 计算重要性百分位数，用于子模型构建
-            # 注意：这里使用正序排序（从小到大），优先裁剪权重幅度较小的神经元
+            # 注意：这里使用正序排序（从小到大），优先裁剪Fisher值较小的神经元
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
-            print(f"神经元权重幅度评估完成，共{len(self.neuron_importance)}个神经元")
-            print(f"权重幅度范围: 最小={self.neuron_importance.min().item():.6f}, 最大={self.neuron_importance.max().item():.6f}")
-            print(f"权重幅度均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
+            print(f"神经元Fisher评估完成，共{len(self.neuron_importance)}个神经元")
+            print(f"Fisher值范围: 最小={self.neuron_importance.min().item():.6f}, 最大={self.neuron_importance.max().item():.6f}")
+            print(f"Fisher值均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
+
 
     def allocate_submodels_with_fixed_pruning(self):
         """
         基于固定裁剪比例的子模型分配模块
-        按照权重幅度正序排序，优先裁剪权重幅度较小的参数
+        按照神经元重要性正序排序，优先裁剪重要性较小的参数
         """
         if self.neuron_importance is None or len(self.neuron_importance) == 0:
-            # 如果没有权重幅度信息，直接使用全局模型
+            # 如果没有神经元重要性信息，直接使用全局模型
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
             return
         
-        # 获取按权重幅度排序的神经元索引（从最小到最大，正序）
+        # 获取按神经元重要性排序的神经元索引（从最小到最大，正序）
         sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
         total_neurons = len(sorted_neuron_indices)
         
@@ -172,13 +238,13 @@ class Server(BasicServer):
             # 计算要裁剪的神经元数量
             num_neurons_to_prune = int(total_neurons * pruning_ratio)
             
-            # 选择要保留的神经元（裁剪权重幅度最小的神经元）
+            # 选择要保留的神经元（裁剪重要性最小的神经元）
             if num_neurons_to_prune >= total_neurons:
-                # 如果裁剪比例过大，至少保留一个权重幅度最大的神经元
+                # 如果裁剪比例过大，至少保留一个重要性最大的神经元
                 neurons_to_keep = [sorted_neuron_indices[-1]]
-                print(f"警告：客户端{i}的裁剪比例({pruning_ratio})过大，只保留权重幅度最大的神经元")
+                print(f"警告：客户端{i}的裁剪比例({pruning_ratio})过大，只保留重要性最大的神经元")
             else:
-                # 保留权重幅度较大的神经元（从索引num_neurons_to_prune开始到末尾）
+                # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
                 neurons_to_keep = sorted_neuron_indices[num_neurons_to_prune:]
             
             print(f"客户端{i}: 裁剪比例={pruning_ratio:.1%}, 裁剪{num_neurons_to_prune}个神经元, 保留{len(neurons_to_keep)}个神经元")
@@ -276,35 +342,10 @@ class Server(BasicServer):
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
         
-        # # 聚合BatchNorm层的统计信息（running_mean和running_var）
-        # aggregated_buffers = {}
-        # for name, buffer in self.model.named_buffers():
-        #     if 'running_mean' in name or 'running_var' in name:
-        #         weighted_sum = torch.zeros_like(buffer)
-                
-        #         # 对于BatchNorm统计信息，始终使用简单平均聚合
-        #         for i, trained_model in enumerate(client_trained_models):
-        #             trained_buffer = dict(trained_model.named_buffers())[name]
-        #             weighted_sum += trained_buffer
-                
-        #         aggregated_buffers[name] = weighted_sum / len(client_trained_models)
-        #     elif 'num_batches_tracked' in name:
-        #         # 对于num_batches_tracked，取最大值
-        #         max_batches = torch.zeros_like(buffer)
-        #         for i, trained_model in enumerate(client_trained_models):
-        #             trained_buffer = dict(trained_model.named_buffers())[name]
-        #             max_batches = torch.max(max_batches, trained_buffer)
-        #         aggregated_buffers[name] = max_batches
-        
-        # # 更新全局模型的缓冲区
-        # for name, buffer in self.model.named_buffers():
-        #     if name in aggregated_buffers:
-        #         buffer.data = aggregated_buffers[name]
-        
     def pack(self, client_id):
         """
         Pack the necessary information for the client's local training.
-        """  
+        """
         return {"model": copy.deepcopy(self.client_submodels[client_id])}
 
     def test(self, model=None):

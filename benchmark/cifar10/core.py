@@ -19,7 +19,9 @@ class TaskGen(DefaultTaskGen):
     def load_data(self):
         train_data = FastCIFAR10(self.rawdata_path, train=True, download=True)
         self.test_data = FastCIFAR10(self.rawdata_path, train=False, download=True)
-
+        subset_size = 10000
+        train_data.data = train_data.data[:subset_size]
+        train_data.targets = train_data.targets[:subset_size]
         train_indices, valid_indices = self.get_train_valid_indices(len(train_data), 0.9)
 
         self.train_data = Custom_Dataset(train_data.data[train_indices], train_data.targets[train_indices])

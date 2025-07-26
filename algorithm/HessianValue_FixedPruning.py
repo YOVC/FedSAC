@@ -21,16 +21,20 @@ class Server(BasicServer):
         
         print(f"客户端裁剪比例设置: {self.fixed_pruning_ratios}")
         
-        # Hessian对角线元素评估间隔
+        # 神经元重要性评估间隔
         self.neuron_importance_eval_interval = option.get('neuron_eval_interval', 1)
         
-        # 神经元重要性分数（基于Hessian对角线元素）
+        # 神经元重要性分数
         self.neuron_importance = None
         self.neuron_importance_percentiles = None
         
         # 为每个客户端维护子模型
         self.client_submodels = [copy.deepcopy(model) for _ in range(len(self.clients))]
         
+        # Hessian矩阵计算相关参数
+        self.hessian_batch_size = option.get('hessian_batch_size', 32)  # 用于计算Hessian矩阵的批次大小
+        self.hessian_samples = option.get('hessian_samples', 100)  # 用于计算Hessian矩阵的样本数量
+        self.damping = option.get('damping', 1e-4)  # 阻尼系数，防止Hessian矩阵奇异
         
     def run(self):
         """
@@ -70,30 +74,111 @@ class Server(BasicServer):
         
         # 测试本地训练完成后的模型精度和聚合后的全局模型精度
         test_results = self.test_local_and_global_models(trained_models, t)
+        print("开始进行Hessian矩阵评估")
         
-        # 3. Hessian对角线元素评估（每1轮评估一次）
+        # 3. Hessian矩阵评估（每1轮评估一次）
         if t % self.neuron_importance_eval_interval == 0:
             self.evaluate_neuron_importance_hessian()
-
         print("开始进行子模型分配")
+        
         # 4. 子模型分配模块：为每个客户端构建子模型（基于固定裁剪比例）
         self.allocate_submodels_with_fixed_pruning()
         return
 
     def evaluate_neuron_importance_hessian(self):
         """
-        基于Hessian矩阵对角线元素的神经元重要性评估模块
-        使用二阶导数信息评估每个神经元的重要性
+        神经元重要性评估模块
+        使用Hessian矩阵对角线元素（二阶导数）评估每个神经元的重要性
+        Hessian矩阵的对角线元素表示损失函数对参数的二阶导数，
+        数值越大表示该参数对损失函数的影响越大，即神经元越重要
         """
-        if self.validation is None:
-            print("警告：没有验证集，无法进行Hessian评估")
-            return
-            
         self.model.eval()
-        print("开始基于Hessian矩阵的神经元重要性评估...")
         
-        # 计算神经元重要性分数
-        neuron_importance = self._compute_neuron_importance_scores()
+        # 如果没有验证数据，则无法计算Hessian矩阵
+        if not self.validation:
+            print("警告：没有验证数据，无法计算Hessian矩阵，将使用权重幅度作为替代")
+            return
+        
+        # 准备用于计算Hessian矩阵的数据
+        data_loader = self.calculator.get_data_loader(self.validation, batch_size=self.hessian_batch_size)
+        samples = []
+        for batch_id, batch_data in enumerate(data_loader):
+            samples.append(batch_data)
+            if len(samples) * self.hessian_batch_size >= self.hessian_samples:
+                break
+        
+        print(f"使用{len(samples)}个批次（约{len(samples) * self.hessian_batch_size}个样本）计算Hessian矩阵")
+        
+        # 计算每个神经元的重要性（基于Hessian矩阵对角线元素）
+        neuron_importance = []
+        neuron_to_param_mapping = {}  # 记录每个神经元对应的参数索引
+        param_index = 0
+        
+        # 首先构建神经元到参数的映射
+        neuron_idx = 0
+        for layer_idx, (name, module) in enumerate(self.model.named_modules()):
+            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
+                if isinstance(module, torch.nn.Linear):
+                    num_neurons = module.out_features
+                    params_per_neuron = module.in_features + (1 if module.bias is not None else 0)
+                elif isinstance(module, torch.nn.Conv2d):
+                    num_neurons = module.out_channels
+                    params_per_neuron = module.in_channels * module.kernel_size[0] * module.kernel_size[1] + (1 if module.bias is not None else 0)
+                
+                for i in range(num_neurons):
+                    neuron_to_param_mapping[neuron_idx + i] = list(range(param_index, param_index + params_per_neuron))
+                    param_index += params_per_neuron
+                
+                neuron_idx += num_neurons
+        
+        # 计算损失函数对每个参数的梯度
+        for batch_data in samples:
+            inputs, targets = batch_data
+            inputs, targets = inputs.to(self.model.get_device()), targets.to(self.model.get_device())
+            
+            # 计算损失
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            loss = F.cross_entropy(outputs, targets)
+            
+            # 计算梯度
+            loss.backward(create_graph=True)
+            
+            # 收集所有参数的梯度
+            all_grads = []
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    all_grads.append(param.grad.view(-1))
+                else:
+                    print("警告：某些参数未参与梯度计算，将跳过")
+            
+            all_grads = torch.cat(all_grads)
+            
+            # 计算Hessian矩阵对角线元素（使用有限差分近似）
+            diag_hessian = torch.zeros_like(all_grads)
+            for i in range(len(all_grads)):
+                # 对第i个参数的梯度计算二阶导数
+                grad_i = all_grads[i]
+                
+                # 计算梯度对该参数的导数（二阶导数）
+                self.model.zero_grad()
+                grad_i.backward(retain_graph=True)
+                
+                # 收集所有参数的二阶导数
+                hessian_i = []
+                for param in self.model.parameters():
+                    if param.grad is not None:
+                        hessian_i.append(param.grad.view(-1))
+                    else:
+                        print("警告：某些参数未参与二阶导数计算，将跳过")
+                
+                hessian_i = torch.cat(hessian_i)
+                diag_hessian[i] = hessian_i[i]  # 只保留对角线元素
+            
+            # 为每个神经元计算Hessian矩阵对角线元素的平均值
+            for neuron_id, param_indices in neuron_to_param_mapping.items():
+                neuron_hessian = torch.mean(torch.abs(diag_hessian[param_indices])).item()
+                neuron_importance.append(neuron_hessian)
         
         # 转换为tensor并归一化重要性分数
         self.neuron_importance = torch.tensor(neuron_importance)
@@ -102,266 +187,48 @@ class Server(BasicServer):
             if self.neuron_importance.sum() == 0:
                 # 如果所有重要性都为0，则赋予一个较小的重要性
                 self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
-                print("警告：所有神经元权重幅度为零，使用较小值代替")
+                print("警告：所有神经元Hessian值为零，使用较小值代替")
             else:
                 # 归一化到0-100范围
                 self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             
             # 计算重要性百分位数，用于子模型构建
-            # 注意：这里使用正序排序（从小到大），优先裁剪权重幅度较小的神经元
+            # 注意：这里使用正序排序（从小到大），优先裁剪Hessian值较小的神经元
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
-            print(f"神经元权重幅度评估完成，共{len(self.neuron_importance)}个神经元")
-            print(f"权重幅度范围: 最小={self.neuron_importance.min().item():.6f}, 最大={self.neuron_importance.max().item():.6f}")
-            print(f"权重幅度均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
-        
-        # 输出评估结果统计信息
-        self._print_evaluation_summary()
+            print(f"神经元Hessian评估完成，共{len(self.neuron_importance)}个神经元")
+            print(f"Hessian值范围: 最小={self.neuron_importance.min().item():.6f}, 最大={self.neuron_importance.max().item():.6f}")
+            print(f"Hessian值均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
 
-    def _compute_neuron_importance_scores(self):
-        """
-        计算神经元重要性分数的主要逻辑
-        """
-        # 优先使用Fisher信息矩阵方法（高效）
-        neuron_importance = self._compute_fisher_based_importance()
-        
-        # 如果Fisher方法失败，使用传统Hessian计算方法
-        if neuron_importance is None or len(neuron_importance) == 0:
-            print("Fisher方法失败，使用传统Hessian计算方法...")
-            neuron_importance = self._compute_traditional_hessian_importance()
-        
-        return neuron_importance
-
-    def _compute_fisher_based_importance(self):
-        """
-        使用Fisher信息矩阵计算神经元重要性（高效方法）
-        """
-        try:
-            print("使用Fisher信息矩阵方法计算神经元重要性...")
-            neuron_importance = []
-            data_loader = self.calculator.get_data_loader(self.validation, batch_size=32)
-            sample_batch = next(iter(data_loader))
-            
-            # 遍历模型层
-            for name, module in self.model.named_modules():
-                if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
-                    layer_importance = self._compute_layer_fisher_importance(module, sample_batch)
-                    if layer_importance:  # 确保layer_importance不为空
-                        neuron_importance.extend(layer_importance)
-            
-            # 检查是否成功计算出重要性分数
-            if not neuron_importance:
-                print("警告：Fisher方法未能计算出任何神经元重要性分数")
-                return None
-                
-            return neuron_importance
-            
-        except Exception as e:
-            print(f"Fisher信息矩阵计算失败: {e}")
-            return None
-
-    def _compute_layer_fisher_importance(self, module, sample_batch):
-        """
-        计算单个层的Fisher信息矩阵重要性
-        """
-        layer_importance = []
-        
-        if isinstance(module, torch.nn.Linear):
-            # 线性层：计算每个输出神经元的重要性
-            for neuron_idx in range(module.out_features):
-                weight_param = module.weight[neuron_idx, :].clone().detach().requires_grad_(True)
-                fisher_score = self._compute_fisher_score(weight_param, sample_batch)
-                # 确保fisher_score是有效的数值
-                if fisher_score is not None and not np.isnan(fisher_score):
-                    layer_importance.append(fisher_score)
-                else:
-                    print(f"Linear警告：Fisher信息矩阵计算失败，跳过神经元 {neuron_idx}")
-                    layer_importance.append(0.0)
-                    
-        elif isinstance(module, torch.nn.Conv2d):
-            # 卷积层：计算每个输出通道的重要性
-            for neuron_idx in range(module.out_channels):
-                weight_param = module.weight[neuron_idx, :, :, :].clone().detach().requires_grad_(True)
-                fisher_score = self._compute_fisher_score(weight_param, sample_batch)
-                # 确保fisher_score是有效的数值
-                if fisher_score is not None and not np.isnan(fisher_score):
-                    layer_importance.append(fisher_score)
-                else:
-                    print(f"Conv2d警告：Fisher信息矩阵计算失败，跳过神经元 {neuron_idx}")
-                    layer_importance.append(0.0)
-        
-        return layer_importance
-
-    def _compute_fisher_score(self, param, batch_data):
-        """
-        计算单个参数的Fisher信息分数
-        """
-        try:
-            # 计算损失 - 使用get_loss方法获取tensor格式的loss
-            loss = self.calculator.get_loss(self.model, batch_data)
-            
-            # 计算梯度 - 添加allow_unused=True处理未使用的参数
-            grad_outputs = torch.autograd.grad(
-                loss, param, 
-                create_graph=True, 
-                retain_graph=True, 
-                allow_unused=True
-            )
-            
-            grad = grad_outputs[0]
-            # Fisher信息矩阵对角线元素 = 梯度的平方和
-            fisher_score = torch.sum(grad ** 2).item()
-            return max(fisher_score, 0.0)  # 确保非负
-            
-        except Exception as e:
-            print(f"Fisher信息矩阵单个参数计算失败: {e}")
-            return 0.0  # 返回0.0而不是None，避免后续处理问题
-
-    def _compute_traditional_hessian_importance(self):
-        """
-        使用传统方法计算Hessian对角线元素（备用方法）
-        """
-        print("使用传统Hessian计算方法...")
-        neuron_importance = []
-        data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
-        
-        # 遍历模型的每一层
-        for name, module in self.model.named_modules():
-            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):  
-                if isinstance(module, torch.nn.Linear):
-                    # 线性层
-                    for neuron_idx in range(module.out_features):
-                        hessian_diag = self.compute_hessian_diagonal_for_neuron(
-                            module, neuron_idx, data_loader, layer_type='linear'
-                        )
-                        neuron_importance.append(hessian_diag)
-                        
-                elif isinstance(module, torch.nn.Conv2d):
-                    # 卷积层
-                    for neuron_idx in range(module.out_channels):
-                        hessian_diag = self.compute_hessian_diagonal_for_neuron(
-                            module, neuron_idx, data_loader, layer_type='conv2d'
-                        )
-                        neuron_importance.append(hessian_diag)
-        
-        return neuron_importance
-
-    def compute_hessian_diagonal_for_neuron(self, module, neuron_idx, data_loader, layer_type='linear'):
-        """
-        计算特定神经元的Hessian对角线元素
-        Args:
-            module: 神经网络层模块
-            neuron_idx: 神经元索引
-            data_loader: 数据加载器
-            layer_type: 层类型 ('linear' 或 'conv2d')
-        Returns:
-            float: 该神经元的Hessian对角线元素值
-        """
-        hessian_diag = 0.0
-        total_samples = 0
-        
-        # 获取该神经元的参数
-        if layer_type == 'linear':
-            target_weight = module.weight[neuron_idx, :]
-            target_bias = module.bias[neuron_idx] if module.bias is not None else None
-        elif layer_type == 'conv2d':
-            target_weight = module.weight[neuron_idx, :, :, :]
-            target_bias = module.bias[neuron_idx] if module.bias is not None else None
-        
-        # 确保参数需要梯度
-        target_weight.requires_grad_(True)
-        if target_bias is not None:
-            target_bias.requires_grad_(True)
-        
-        # 遍历验证数据计算Hessian对角线元素
-        for batch_data in data_loader:
-            batch_size = len(batch_data[1])
-            try:
-                # 前向传播计算损失 - 使用get_loss方法获取tensor格式的loss
-                self.model.zero_grad()
-                loss = self.calculator.get_loss(self.model, batch_data)
-                
-                # 计算一阶梯度
-                params_to_compute = [target_weight]
-                if target_bias is not None:
-                    params_to_compute.append(target_bias)
-                
-                first_grads = torch.autograd.grad(
-                    loss, params_to_compute, 
-                    create_graph=True, 
-                    retain_graph=True,
-                    allow_unused=True
-                )
-                
-                # 计算Hessian对角线元素（更高效的方法）
-                for i, grad in enumerate(first_grads):
-                    if grad is not None:
-                        # 使用torch.autograd.grad计算二阶导数
-                        grad_sum = torch.sum(grad)  # 对梯度求和
-                        try:
-                            hessian_elem_outputs = torch.autograd.grad(
-                                grad_sum, params_to_compute[i], 
-                                retain_graph=True, 
-                                create_graph=False,
-                                allow_unused=True
-                            )
-                            
-                            # 检查二阶导数是否为None
-                            if hessian_elem_outputs[0] is not None:
-                                hessian_elem = hessian_elem_outputs[0]
-                                # 累加Hessian对角线元素的L2范数
-                                hessian_diag += torch.norm(hessian_elem, p=2).item() * batch_size
-                            else:
-                                # 如果二阶导数为None，使用一阶梯度的平方作为近似
-                                hessian_diag += torch.norm(grad, p=2).item() * batch_size
-                                
-                        except RuntimeError as e:
-                            # 如果无法计算二阶导数，使用一阶梯度的平方作为近似
-                            hessian_diag += torch.norm(grad, p=2).item() * batch_size
-                    else:
-                        # 如果一阶梯度为None，说明参数未参与计算图
-                        print(f"警告：参数{i}未参与损失计算，跳过Hessian计算")
-                            
-            except Exception as e:
-                print(f"警告：计算神经元{neuron_idx}的Hessian时出错: {e}")
-                continue
-            
-            total_samples += batch_size
-        
-        # 返回平均Hessian对角线元素
-        if total_samples > 0:
-            return hessian_diag / total_samples
-        else:
-            return 0.0
 
     def allocate_submodels_with_fixed_pruning(self):
         """
         基于固定裁剪比例的子模型分配模块
-        按照Hessian对角线元素倒序排序，优先保留Hessian对角线元素较大的参数
+        按照神经元重要性正序排序，优先裁剪重要性较小的参数
         """
         if self.neuron_importance is None or len(self.neuron_importance) == 0:
-            # 如果没有Hessian对角线元素信息，直接使用全局模型
+            # 如果没有神经元重要性信息，直接使用全局模型
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
             return
         
-        # 获取按Hessian对角线元素排序的神经元索引（从最小到最大）
+        # 获取按神经元重要性排序的神经元索引（从最小到最大，正序）
         sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
         total_neurons = len(sorted_neuron_indices)
         
         for i, pruning_ratio in enumerate(self.fixed_pruning_ratios):
-            # 计算要保留的神经元数量
-            num_neurons_to_keep = int(total_neurons * pruning_ratio)
+            # 计算要裁剪的神经元数量
+            num_neurons_to_prune = int(total_neurons * pruning_ratio)
             
-            # 选择要保留的神经元（保留Hessian对角线元素最大的神经元）
-            if num_neurons_to_keep <= 0:
-                # 如果裁剪比例过大，至少保留一个Hessian对角线元素最大的神经元
-                neurons_to_keep = [sorted_neuron_indices[0]]
-                print(f"警告：客户端{i}的裁剪比例({pruning_ratio})过大，只保留Hessian对角线元素最大的神经元")
+            # 选择要保留的神经元（裁剪重要性最小的神经元）
+            if num_neurons_to_prune >= total_neurons:
+                # 如果裁剪比例过大，至少保留一个重要性最大的神经元
+                neurons_to_keep = [sorted_neuron_indices[-1]]
+                print(f"警告：客户端{i}的裁剪比例({pruning_ratio})过大，只保留重要性最大的神经元")
             else:
-                # 保留Hessian对角线元素较大的神经元（从索引0开始到num_neurons_to_keep）
-                neurons_to_keep = sorted_neuron_indices[num_neurons_to_keep:]
+                # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
+                neurons_to_keep = sorted_neuron_indices[num_neurons_to_prune:]
             
-            print(f"客户端{i}: 裁剪比例={pruning_ratio:.1%}, 保留{len(neurons_to_keep)}个神经元, 裁剪{total_neurons - len(neurons_to_keep)}个神经元")
+            print(f"客户端{i}: 裁剪比例={pruning_ratio:.1%}, 裁剪{num_neurons_to_prune}个神经元, 保留{len(neurons_to_keep)}个神经元")
             
             # 构建子模型（通过掩码实现）
             submodel = copy.deepcopy(self.model)
@@ -451,6 +318,7 @@ class Server(BasicServer):
             print(f"警告：参数 {name} 聚合后包含NaN值")
         if torch.isinf(aggregated_params[name]).any():
             print(f"警告：参数 {name} 聚合后包含无穷值")
+
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
@@ -588,7 +456,6 @@ class Client(BasicClient):
         """
         Standard local training procedure. Train the transmitted model with local training dataset.
         """
-        logger.time_start('train Time Cost')
         model.train()
         data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
         optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
@@ -602,7 +469,6 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
-        logger.time_end('train Time Cost')
         return
 
     def test(self, model, dataflag='valid'):
