@@ -11,7 +11,7 @@ python main.py \
     --model resnet18 \
     --num_epochs 25 \
     --learning_rate 0.01 \
-    --batch_size 32 \
+    --batch_size 64 \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \
@@ -26,7 +26,7 @@ python main.py \
     --num_rounds 50 \
     --num_epochs 15 \
     --learning_rate 0.01 \
-    --batch_size 32 \
+    --batch_size 64 \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \
@@ -41,7 +41,7 @@ python main.py \
     --num_rounds 50 \
     --num_epochs 15 \
     --learning_rate 0.01 \
-    --batch_size 32 \
+    --batch_size 64 \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \

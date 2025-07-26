@@ -198,8 +198,16 @@ class Server(BasicServer):
         try:
             # 计算损失 - 使用get_loss方法获取tensor格式的loss
             loss = self.calculator.get_loss(self.model, batch_data)
-            # 计算梯度
-            grad = torch.autograd.grad(loss, param, create_graph=True, retain_graph=True)[0]
+            
+            # 计算梯度 - 添加allow_unused=True处理未使用的参数
+            grad_outputs = torch.autograd.grad(
+                loss, param, 
+                create_graph=True, 
+                retain_graph=True, 
+                allow_unused=True
+            )
+            
+            grad = grad_outputs[0]
             # Fisher信息矩阵对角线元素 = 梯度的平方和
             fisher_score = torch.sum(grad ** 2).item()
             return max(fisher_score, 0.0)  # 确保非负
@@ -278,7 +286,10 @@ class Server(BasicServer):
                     params_to_compute.append(target_bias)
                 
                 first_grads = torch.autograd.grad(
-                    loss, params_to_compute, create_graph=True, retain_graph=True
+                    loss, params_to_compute, 
+                    create_graph=True, 
+                    retain_graph=True,
+                    allow_unused=True
                 )
                 
                 # 计算Hessian对角线元素（更高效的方法）
@@ -287,18 +298,28 @@ class Server(BasicServer):
                         # 使用torch.autograd.grad计算二阶导数
                         grad_sum = torch.sum(grad)  # 对梯度求和
                         try:
-                            hessian_elem = torch.autograd.grad(
+                            hessian_elem_outputs = torch.autograd.grad(
                                 grad_sum, params_to_compute[i], 
-                                retain_graph=True, create_graph=False
-                            )[0]
+                                retain_graph=True, 
+                                create_graph=False,
+                                allow_unused=True
+                            )
                             
-                            if hessian_elem is not None:
+                            # 检查二阶导数是否为None
+                            if hessian_elem_outputs[0] is not None:
+                                hessian_elem = hessian_elem_outputs[0]
                                 # 累加Hessian对角线元素的L2范数
                                 hessian_diag += torch.norm(hessian_elem, p=2).item() * batch_size
+                            else:
+                                # 如果二阶导数为None，使用一阶梯度的平方作为近似
+                                hessian_diag += torch.norm(grad, p=2).item() * batch_size
                                 
                         except RuntimeError as e:
                             # 如果无法计算二阶导数，使用一阶梯度的平方作为近似
                             hessian_diag += torch.norm(grad, p=2).item() * batch_size
+                    else:
+                        # 如果一阶梯度为None，说明参数未参与计算图
+                        print(f"警告：参数{i}未参与损失计算，跳过Hessian计算")
                             
             except Exception as e:
                 print(f"警告：计算神经元{neuron_idx}的Hessian时出错: {e}")
