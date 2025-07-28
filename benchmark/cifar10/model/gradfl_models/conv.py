@@ -349,9 +349,12 @@ def get_model_params(global_model, client_model_idx):
     for k, v in global_model.state_dict().items():
         if k in client_model_idx:
             if v.dim() > 1:
-                client_model_params[k] = copy.deepcopy(v[torch.meshgrid(client_model_idx[k], indexing='ij')])
+                # 确保所有张量在同一设备上
+                indices = [idx.to(v.device) for idx in client_model_idx[k]]
+                client_model_params[k] = copy.deepcopy(v[torch.meshgrid(indices, indexing='ij')])
             else:
-                client_model_params[k] = copy.deepcopy(v[client_model_idx[k]])
+                # 确保索引在与参数相同的设备上
+                client_model_params[k] = copy.deepcopy(v[client_model_idx[k].to(v.device)])
         else:
             raise NameError('Can\'t match {}'.format(k))
     return client_model_params

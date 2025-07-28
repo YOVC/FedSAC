@@ -26,7 +26,7 @@ class Server(BasicServer):
         # GradFL specific parameters
         self.mode = option.get('mode', 'awareGrad')  # 子模型生成策略：awareGrad, roll, rand, hetero, fedavg
         self.select_mode = option.get('select_mode', 'absmax')  # 选择模式：absmax, probs, absmin
-
+        self.model_name = option.get('model', 'resnet18')
         self.fixed_keep_ratios = [0.8, 0.5, 0.9, 0.7, 0.6, 0.75, 0.4, 0.55, 1.0, 0.45]
         
         # 为每个客户端维护子模型和子模型形状
@@ -144,12 +144,21 @@ class Server(BasicServer):
             else:
                 raise ValueError(f"不支持的子模型生成模式: {self.mode}")
     
-    def get_model(model_name, mode_rate):
+    def get_model(self, model_name, mode_rate):
         if model_name == 'resnet18':
             # ResNet18配置：4个残差块组，每组通道数分别为64,128,256,512
             hidden_size = [64, 128, 256, 512]
             num_blocks = [2, 2, 2, 2]  # 每组包含2个残差块
-            model = resnet18(hidden_size, num_blocks=num_blocks, num_classes=10, model_rate=mode_rate)
+            # 添加datashape参数，确保输入通道数正确设置为3（RGB图像）
+            model = resnet18(hidden_size=hidden_size, num_blocks=num_blocks, num_classes=10, model_rate=mode_rate)
+            # 确保模型在正确的设备上
+            model = model.to(fmodule.device)
+            logging.info(f"创建新模型，保留比例: {mode_rate}")
+            # 打印模型第一层卷积的形状
+            for name, param in model.named_parameters():
+                if name == 'layer1.0.conv1.weight':
+                    logging.info(f"新模型 {name} 形状: {param.shape}")
+                    break
         return model
 
     def construct_gradient_aware_submodel(self, client_idx, rate):
@@ -177,7 +186,7 @@ class Server(BasicServer):
         
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
-        self.client_submodels[client_idx] = self.get_model(self.model, mode_rate=rate)
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate).to(fmodule.device)
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
         
@@ -198,6 +207,9 @@ class Server(BasicServer):
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
         
+        # 创建新的子模型实例
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
+        
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
         
@@ -213,6 +225,9 @@ class Server(BasicServer):
         
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
+        
+        # 创建新的子模型实例
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
         
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
@@ -230,21 +245,27 @@ class Server(BasicServer):
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
         
+        # 创建新的子模型实例
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
+        
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
         
         # 保存子模型形状信息
         self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
     
-    def construct_fedavg_submodel(self, client_idx):
-        """完整模型（FedAvg基准）的子模型生成"""
-        # 使用模型的get_idx_hetero方法生成完整模型索引（比例为1）
+    def construct_fedavg_submodel(self, client_idx, rate=1):
+        """FedAVG方式的子模型生成（使用完整模型）"""
+        # 使用模型的get_idx_hetero方法生成子模型索引，但使用rate=1表示使用完整模型
         self.model.get_idx_hetero(1)
         client_model_idx = copy.deepcopy(self.model.idx)
         self.model.clear_idx()
         
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
+        
+        # 创建新的子模型实例（使用完整模型）
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
         
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
@@ -269,6 +290,10 @@ class Server(BasicServer):
         # 从全局模型中提取子模型参数
         client_model_params = self.get_model_params(self.model, client_model_idx)
         
+        # 创建新的子模型实例
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
+
+        
         # 加载参数到客户端子模型
         self.client_submodels[client_idx].load_state_dict(client_model_params)
         
@@ -281,9 +306,12 @@ class Server(BasicServer):
         for k, v in global_model.state_dict().items():
             if k in client_model_idx:
                 if v.dim() > 1:
-                    client_model_params[k] = copy.deepcopy(v[torch.meshgrid(client_model_idx[k], indexing='ij')])
+                    # 确保所有张量在同一设备上
+                    indices = [idx.to(v.device) for idx in client_model_idx[k]]
+                    client_model_params[k] = copy.deepcopy(v[torch.meshgrid(indices, indexing='ij')])
                 else:
-                    client_model_params[k] = copy.deepcopy(v[client_model_idx[k]])
+                    # 确保索引在与参数相同的设备上
+                    client_model_params[k] = copy.deepcopy(v[client_model_idx[k].to(v.device)])
             else:
                 raise NameError(f"无法匹配参数: {k}")
         return client_model_params
@@ -309,11 +337,14 @@ class Server(BasicServer):
                 temp_shape = self.clients_models_shape[idx][k]
                 if k in global_temp_params:
                     if v.dim() > 1:
-                        global_temp_params[k][torch.meshgrid(temp_shape, indexing='ij')] += v
-                        client_num_model_param[k][torch.meshgrid(temp_shape, indexing='ij')] += 1
+                        # 确保所有张量在同一设备上
+                        indices = [idx_tensor.to(global_temp_params[k].device) for idx_tensor in temp_shape]
+                        global_temp_params[k][torch.meshgrid(indices, indexing='ij')] += v
+                        client_num_model_param[k][torch.meshgrid(indices, indexing='ij')] += 1
                     else:
-                        global_temp_params[k][temp_shape] += v
-                        client_num_model_param[k][temp_shape] += 1
+                        # 确保索引在与参数相同的设备上
+                        global_temp_params[k][temp_shape.to(global_temp_params[k].device)] += v
+                        client_num_model_param[k][temp_shape.to(client_num_model_param[k].device)] += 1
                 else:
                     raise NameError(f"无法匹配参数: {k}")
         
@@ -392,8 +423,7 @@ class Server(BasicServer):
             results['local_models']['eval_metrics'].append(eval_metric)
             results['local_models']['losses'].append(loss)
             
-            logging.debug(f"客户端 {i} (保留比例{self.fixed_pruning_ratios[i]:.1%}): "
-                         f"精度={eval_metric:.4f}, 损失={loss:.4f}")
+            logging.info(f"客户端 {i} (保留比例{self.fixed_keep_ratios[i]:.1%}): 精度={eval_metric:.4f}, 损失={loss:.4f}")
         
         # 计算本地模型的平均性能
         if results['local_models']['eval_metrics']:

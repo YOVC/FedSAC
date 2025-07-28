@@ -47,3 +47,17 @@ python main.py \
     --gpu 0 \
     --neuron_eval_interval 1
 echo "实验完成！"
+
+
+python main.py \
+    --task cifar10_cnum10_dist2_skew1.0_seed0 \
+    --algorithm GradFL \
+    --model resnet18 \
+    --num_rounds 50 \
+    --num_epochs 2 \
+    --learning_rate 0.01 \
+    --batch_size 64 \
+    --eval_interval 1 \
+    --seed 0 \
+    --gpu 0 \
+    --neuron_eval_interval 1
