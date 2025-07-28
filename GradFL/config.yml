@@ -1,0 +1,55 @@
+#config
+#commucation
+use_email: False
+seed: 2023
+device: 0
+model_name: resnet18
+
+# optimizer
+optimizer_name: SGD
+momentum: 0.9
+weight_decay: 5.0e-4
+
+# scheduler
+scheduler_name: None
+milestones:
+  - 300
+  - 500
+gamma: 0.1
+
+#wandb
+use_wandb: False
+project_name: GradFL
+group_name: compare_LR
+
+# pre-train
+is_pre_train: True
+pre_train_epoch: 20
+
+#train
+inferen_batch: 128
+batchsize: 16
+rounds: 1000
+epoch: 2
+numbers: 100
+frc: 0.1
+lr: 0.001
+client_state: dynamic
+probs:
+  - 0.2
+  - 0.2
+  - 0.2
+  - 0.2
+  - 0.2
+submodel_rate:
+  - 1
+  - 0.5
+  - 0.25
+  - 0.125
+  - 0.0625
+select_mode: absmax
+
+# dataset
+dataset: emnist
+
+

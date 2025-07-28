@@ -1,0 +1,7 @@
+.idea/
+/wandb/
+data/
+__pycache__/
+
+
+
