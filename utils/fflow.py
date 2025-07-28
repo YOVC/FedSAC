@@ -77,7 +77,7 @@ def read_option():
     parser.add_argument('--neuron_eval_interval', help='神经元重要性评估间隔', type=int, default=10)
     
     # GradFL算法相关参数
-    parser.add_argument('--mode', help='GradFL子模型生成策略：awareGrad, roll, rand, hetero, fedavg', type=str, default='awareGrad')
+    parser.add_argument('--mode', help='GradFL子模型生成策略：awareGrad, roll, rand, hetero, fedavg', type=str, default='awareWeight')
     parser.add_argument('--select_mode', help='GradFL选择模式：absmax, probs, absmin', type=str, default='absmax')
 
 

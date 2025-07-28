@@ -86,17 +86,18 @@ class Server(BasicServer):
         
         # 4. 聚合客户端模型更新全局模型
         logging.info(f"开始聚合客户端模型")
-        self.aggregate_client_models(trained_models, self.selected_clients)
+        self.aggregate_client_models(trained_models, self.selected_clients, t, isUseGlobal=False)
         
-        # 5. 测试全局模型性能
-        logging.info(f"评估全局模型性能")
-        self.test()
-        
+        # 5. 测试模型性能
+        self.test_local_and_global_models(trained_models, t)
+
         # 6. 为下一轮构建客户端子模型（第一轮之后）
         if t < self.num_rounds:  # 确保不在最后一轮构建子模型
             logging.info(f"为下一轮构建客户端子模型")
             self.construct_client_submodels(self.selected_clients)
-        
+
+        logging.info(f"开始测试子模型精度")
+        self.test_local_and_global_models(self.client_submodels, t, isTestGlobal=False)
         # 7. 更新客户端信息
         for idx in self.selected_clients:
             if not self.last_client_info[idx]:
@@ -287,7 +288,7 @@ class Server(BasicServer):
                 raise NameError(f"无法匹配参数: {k}")
         return client_model_params
     
-    def aggregate_client_models(self, client_models, client_indices):
+    def aggregate_client_models(self, client_models, client_indices, t, isUseGlobal=True):
         """聚合客户端模型更新全局模型"""
         # 初始化全局模型参数
         global_temp_params = OrderedDict()
@@ -295,8 +296,12 @@ class Server(BasicServer):
         
         # 初始化参数计数器
         for k, v in self.model.state_dict().items():
-            global_temp_params[k] = copy.deepcopy(v)
-            client_num_model_param[k] = torch.ones_like(v)
+            if isUseGlobal and t != 0:
+                global_temp_params[k] = copy.deepcopy(v)
+                client_num_model_param[k] = torch.ones_like(v)
+            else:
+                global_temp_params[k] = torch.zeros_like(v)
+                client_num_model_param[k] = torch.zeros_like(v)
         
         # 聚合客户端模型参数
         for idx in client_indices:
@@ -323,6 +328,103 @@ class Server(BasicServer):
         """打包发送给客户端的信息"""
         return {"model" : self.client_submodels[client_id]}
 
+    def test(self, model=None):
+        """
+        Evaluate each client's submodel on the test dataset owned by the server.
+        Returns a list of evaluation metrics for each client's submodel to support fairness analysis.
+        """
+        if self.test_data:
+            eval_metrics, losses = [], []
+            
+            # 评估每个客户端的子模型
+            for i in range(len(self.clients)):
+                submodel = self.client_submodels[i] if hasattr(self, 'client_submodels') and i < len(self.client_submodels) else self.model
+                
+                submodel.eval()
+                loss = 0
+                eval_metric = 0
+                data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+                
+                for batch_id, batch_data in enumerate(data_loader):
+                    bmean_eval_metric, bmean_loss = self.calculator.test(submodel, batch_data)
+                    loss += bmean_loss * len(batch_data[1])
+                    eval_metric += bmean_eval_metric * len(batch_data[1])
+                
+                eval_metric /= len(self.test_data)
+                loss /= len(self.test_data)
+                
+                eval_metrics.append(eval_metric)
+                losses.append(loss)
+            
+            return eval_metrics, losses
+        else:
+            return -1, -1
+            
+    def test_local_and_global_models(self, trained_models, round_num, isTestGlobal=True):
+        results = {
+            'local_models': {'eval_metrics': [], 'losses': []},
+            'global_model': {'eval_metric': 0.0, 'loss': 0.0}
+        }
+        
+        if not self.test_data:
+            logging.warning("没有测试数据，无法进行模型评估")
+            return results
+        
+        # 1. 测试本地训练完成后的模型精度
+        print(f"轮次 {round_num}: 测试本地训练完成后的模型精度...")
+        for i, trained_model in enumerate(trained_models):
+            trained_model.eval()
+            loss = 0
+            eval_metric = 0
+            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+            
+            total_samples = 0
+            for batch_id, batch_data in enumerate(data_loader):
+                bmean_eval_metric, bmean_loss = self.calculator.test(trained_model, batch_data)
+                loss += bmean_loss * len(batch_data[1])
+                eval_metric += bmean_eval_metric * len(batch_data[1])
+                total_samples += len(batch_data[1])
+            
+            if total_samples > 0:
+                eval_metric /= total_samples
+                loss /= total_samples
+            
+            results['local_models']['eval_metrics'].append(eval_metric)
+            results['local_models']['losses'].append(loss)
+            
+            logging.debug(f"客户端 {i} (保留比例{self.fixed_pruning_ratios[i]:.1%}): "
+                         f"精度={eval_metric:.4f}, 损失={loss:.4f}")
+        
+        # 计算本地模型的平均性能
+        if results['local_models']['eval_metrics']:
+            avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
+            avg_local_loss = sum(results['local_models']['losses']) / len(results['local_models']['losses'])
+            logging.info(f"本地模型平均性能 - 精度: {avg_local_metric:.4f}, 损失: {avg_local_loss:.4f}")
+        
+        if isTestGlobal:
+            # 2. 测试聚合后的全局模型精度
+            self.model.eval()
+            loss = 0
+            eval_metric = 0
+            data_loader = self.calculator.get_data_loader(self.test_data, batch_size=64)
+            
+            total_samples = 0
+            for batch_id, batch_data in enumerate(data_loader):
+                bmean_eval_metric, bmean_loss = self.calculator.test(self.model, batch_data)
+                loss += bmean_loss * len(batch_data[1])
+                eval_metric += bmean_eval_metric * len(batch_data[1])
+                total_samples += len(batch_data[1])
+            
+            if total_samples > 0:
+                eval_metric /= total_samples
+                loss /= total_samples
+            
+            results['global_model']['eval_metric'] = eval_metric
+            results['global_model']['loss'] = loss
+            
+            logging.info(f"聚合后 全局模型性能 - 精度: {eval_metric:.4f}, 损失: {loss:.4f}")
+        
+        return results
 class Client(BasicClient):
     def __init__(self, option, name='', train_data=None, valid_data=None):
         super(Client, self).__init__(option, name, train_data, valid_data)
