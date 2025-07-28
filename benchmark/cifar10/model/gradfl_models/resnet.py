@@ -209,31 +209,111 @@ class Model(FModule):
         self.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
         self.idx['bn1.weight'], self.idx['bn1.bias'] = first_channels, first_channels
         
+        # 处理layer1 - 输入通道应该是conv1的输出通道
+        layer1_input_channels = first_channels
         for i, blc in enumerate(self.layer1):
             gradient_f = gradient[f'layer1.{i}.conv1']
-            first_channels = get_topk_index(gradient_f, int(rate * 64), topmode)
-            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            first_channels_block = get_topk_index(gradient_f, int(rate * 64), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer1_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
             
             gradient_s = gradient[f'layer1.{i}.conv2']
-            second_channels = get_topk_index(gradient_s, int(rate * 64), topmode)
-            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            second_channels_block = get_topk_index(gradient_s, int(rate * 64), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
             
             if len(blc.shortcut) != 0:
-                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
-                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer1_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
             
             for k, v in blc.idx.items():
                 self.idx[f'layer1.{i}.{k}'] = v
             
-            start_channels = second_channels
+            # 下一个block的输入通道是当前block的输出通道
+            layer1_input_channels = second_channels_block
         
-        # 类似地处理layer2, layer3, layer4
-        # 为简洁起见，这里只展示layer1的处理方式
-        # 实际实现中需要添加其他层的处理
+        # layer1的最终输出通道
+        layer1_output_channels = layer1_input_channels
         
-        self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), start_channels)
+        # 处理layer2 - 输入通道是layer1的输出通道
+        layer2_input_channels = layer1_output_channels
+        for i, blc in enumerate(self.layer2):
+            gradient_f = gradient[f'layer2.{i}.conv1']
+            first_channels_block = get_topk_index(gradient_f, int(rate * 128), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer2_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
+            
+            gradient_s = gradient[f'layer2.{i}.conv2']
+            second_channels_block = get_topk_index(gradient_s, int(rate * 128), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer2_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer2.{i}.{k}'] = v
+            
+            # 下一个block的输入通道是当前block的输出通道
+            layer2_input_channels = second_channels_block
+        
+        # layer2的最终输出通道
+        layer2_output_channels = layer2_input_channels
+        
+        # 处理layer3 - 输入通道是layer2的输出通道
+        layer3_input_channels = layer2_output_channels
+        for i, blc in enumerate(self.layer3):
+            gradient_f = gradient[f'layer3.{i}.conv1']
+            first_channels_block = get_topk_index(gradient_f, int(rate * 256), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer3_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
+            
+            gradient_s = gradient[f'layer3.{i}.conv2']
+            second_channels_block = get_topk_index(gradient_s, int(rate * 256), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer3_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer3.{i}.{k}'] = v
+            
+            # 下一个block的输入通道是当前block的输出通道
+            layer3_input_channels = second_channels_block
+        
+        # layer3的最终输出通道
+        layer3_output_channels = layer3_input_channels
+        
+        # 处理layer4 - 输入通道是layer3的输出通道
+        layer4_input_channels = layer3_output_channels
+        for i, blc in enumerate(self.layer4):
+            gradient_f = gradient[f'layer4.{i}.conv1']
+            first_channels_block = get_topk_index(gradient_f, int(rate * 512), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer4_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
+            
+            gradient_s = gradient[f'layer4.{i}.conv2']
+            second_channels_block = get_topk_index(gradient_s, int(rate * 512), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer4_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer4.{i}.{k}'] = v
+            
+            # 下一个block的输入通道是当前block的输出通道
+            layer4_input_channels = second_channels_block
+        
+        # layer4的最终输出通道
+        layer4_output_channels = layer4_input_channels
+        
+        self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), layer4_output_channels)
         self.idx['fc.bias'] = torch.arange(self.fc.weight.shape[0])
         
     def get_idx_aware_weight(self, rate, topmode, weights):
@@ -244,90 +324,111 @@ class Model(FModule):
         self.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
         self.idx['bn1.weight'], self.idx['bn1.bias'] = first_channels, first_channels
         
+        # 处理layer1 - 输入通道应该是conv1的输出通道
+        layer1_input_channels = first_channels
         for i, blc in enumerate(self.layer1):
             weight_f = weights[f'layer1.{i}.conv1.weight']
-            first_channels = get_topk_index(weight_f, int(rate * 64), topmode)
-            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            first_channels_block = get_topk_index(weight_f, int(rate * 64), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer1_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
             
             weight_s = weights[f'layer1.{i}.conv2.weight']
-            second_channels = get_topk_index(weight_s, int(rate * 64), topmode)
-            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            second_channels_block = get_topk_index(weight_s, int(rate * 64), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
             
             if len(blc.shortcut) != 0:
-                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
-                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer1_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
             
             for k, v in blc.idx.items():
                 self.idx[f'layer1.{i}.{k}'] = v
             
-            start_channels = second_channels
+            # 下一个block的输入通道是当前block的输出通道
+            layer1_input_channels = second_channels_block
         
-        # 处理layer2
+        # layer1的最终输出通道
+        layer1_output_channels = layer1_input_channels
+        
+        # 处理layer2 - 输入通道是layer1的输出通道
+        layer2_input_channels = layer1_output_channels
         for i, blc in enumerate(self.layer2):
             weight_f = weights[f'layer2.{i}.conv1.weight']
-            first_channels = get_topk_index(weight_f, int(rate * 128), topmode)
-            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            first_channels_block = get_topk_index(weight_f, int(rate * 128), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer2_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
             
             weight_s = weights[f'layer2.{i}.conv2.weight']
-            second_channels = get_topk_index(weight_s, int(rate * 128), topmode)
-            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            second_channels_block = get_topk_index(weight_s, int(rate * 128), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
             
             if len(blc.shortcut) != 0:
-                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
-                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer2_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
             
             for k, v in blc.idx.items():
                 self.idx[f'layer2.{i}.{k}'] = v
             
-            start_channels = second_channels
+            # 下一个block的输入通道是当前block的输出通道
+            layer2_input_channels = second_channels_block
         
-        # 处理layer3
+        # layer2的最终输出通道
+        layer2_output_channels = layer2_input_channels
+        
+        # 处理layer3 - 输入通道是layer2的输出通道
+        layer3_input_channels = layer2_output_channels
         for i, blc in enumerate(self.layer3):
             weight_f = weights[f'layer3.{i}.conv1.weight']
-            first_channels = get_topk_index(weight_f, int(rate * 256), topmode)
-            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            first_channels_block = get_topk_index(weight_f, int(rate * 256), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer3_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
             
             weight_s = weights[f'layer3.{i}.conv2.weight']
-            second_channels = get_topk_index(weight_s, int(rate * 256), topmode)
-            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            second_channels_block = get_topk_index(weight_s, int(rate * 256), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
             
             if len(blc.shortcut) != 0:
-                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
-                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer3_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
             
             for k, v in blc.idx.items():
                 self.idx[f'layer3.{i}.{k}'] = v
             
-            start_channels = second_channels
+            # 下一个block的输入通道是当前block的输出通道
+            layer3_input_channels = second_channels_block
         
-        # 处理layer4
+        # layer3的最终输出通道
+        layer3_output_channels = layer3_input_channels
+        
+        # 处理layer4 - 输入通道是layer3的输出通道
+        layer4_input_channels = layer3_output_channels
         for i, blc in enumerate(self.layer4):
             weight_f = weights[f'layer4.{i}.conv1.weight']
-            first_channels = get_topk_index(weight_f, int(rate * 512), topmode)
-            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            first_channels_block = get_topk_index(weight_f, int(rate * 512), topmode)
+            blc.idx['conv1.weight'] = (first_channels_block, layer4_input_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels_block, first_channels_block
             
             weight_s = weights[f'layer4.{i}.conv2.weight']
-            second_channels = get_topk_index(weight_s, int(rate * 512), topmode)
-            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
-            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            second_channels_block = get_topk_index(weight_s, int(rate * 512), topmode)
+            blc.idx['conv2.weight'] = (second_channels_block, first_channels_block, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels_block, second_channels_block
             
             if len(blc.shortcut) != 0:
-                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
-                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+                blc.idx['shortcut.0.weight'] = (second_channels_block, layer4_input_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels_block, second_channels_block
             
             for k, v in blc.idx.items():
                 self.idx[f'layer4.{i}.{k}'] = v
             
-            start_channels = second_channels
+            # 下一个block的输入通道是当前block的输出通道
+            layer4_input_channels = second_channels_block
         
-        self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), start_channels)
+        # layer4的最终输出通道
+        layer4_output_channels = layer4_input_channels
+        
+        self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), layer4_output_channels)
         self.idx['fc.bias'] = torch.arange(self.fc.weight.shape[0])
 
     def get_idx_roll(self, rate):
