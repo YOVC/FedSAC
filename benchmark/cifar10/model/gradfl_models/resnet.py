@@ -235,6 +235,100 @@ class Model(FModule):
         
         self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), start_channels)
         self.idx['fc.bias'] = torch.arange(self.fc.weight.shape[0])
+        
+    def get_idx_aware_weight(self, rate, topmode, weights):
+        """基于权重大小选择重要通道"""
+        start_channels = (torch.arange(3))
+        weight_s = weights['conv1.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 64), topmode)
+        self.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+        self.idx['bn1.weight'], self.idx['bn1.bias'] = first_channels, first_channels
+        
+        for i, blc in enumerate(self.layer1):
+            weight_f = weights[f'layer1.{i}.conv1.weight']
+            first_channels = get_topk_index(weight_f, int(rate * 64), topmode)
+            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            
+            weight_s = weights[f'layer1.{i}.conv2.weight']
+            second_channels = get_topk_index(weight_s, int(rate * 64), topmode)
+            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer1.{i}.{k}'] = v
+            
+            start_channels = second_channels
+        
+        # 处理layer2
+        for i, blc in enumerate(self.layer2):
+            weight_f = weights[f'layer2.{i}.conv1.weight']
+            first_channels = get_topk_index(weight_f, int(rate * 128), topmode)
+            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            
+            weight_s = weights[f'layer2.{i}.conv2.weight']
+            second_channels = get_topk_index(weight_s, int(rate * 128), topmode)
+            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer2.{i}.{k}'] = v
+            
+            start_channels = second_channels
+        
+        # 处理layer3
+        for i, blc in enumerate(self.layer3):
+            weight_f = weights[f'layer3.{i}.conv1.weight']
+            first_channels = get_topk_index(weight_f, int(rate * 256), topmode)
+            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            
+            weight_s = weights[f'layer3.{i}.conv2.weight']
+            second_channels = get_topk_index(weight_s, int(rate * 256), topmode)
+            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer3.{i}.{k}'] = v
+            
+            start_channels = second_channels
+        
+        # 处理layer4
+        for i, blc in enumerate(self.layer4):
+            weight_f = weights[f'layer4.{i}.conv1.weight']
+            first_channels = get_topk_index(weight_f, int(rate * 512), topmode)
+            blc.idx['conv1.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn1.weight'], blc.idx['bn1.bias'] = first_channels, first_channels
+            
+            weight_s = weights[f'layer4.{i}.conv2.weight']
+            second_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+            blc.idx['conv2.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+            blc.idx['bn2.weight'], blc.idx['bn2.bias'] = second_channels, second_channels
+            
+            if len(blc.shortcut) != 0:
+                blc.idx['shortcut.0.weight'] = (second_channels, start_channels, torch.arange(1), torch.arange(1))
+                blc.idx['shortcut.2.weight'], blc.idx['shortcut.2.bias'] = second_channels, second_channels
+            
+            for k, v in blc.idx.items():
+                self.idx[f'layer4.{i}.{k}'] = v
+            
+            start_channels = second_channels
+        
+        self.idx['fc.weight'] = (torch.arange(self.fc.weight.shape[0]), start_channels)
+        self.idx['fc.bias'] = torch.arange(self.fc.weight.shape[0])
 
     def get_idx_roll(self, rate):
         start_channels = (torch.arange(3))

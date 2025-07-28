@@ -190,6 +190,69 @@ class VGG16(FModule):
         second_channels = get_topk_index(gradient_s, int(rate * 128), topmode)
         self.idx['layer7.0.weight'], self.idx['layer7.0.bias'] = (second_channels, first_channels), second_channels
         self.idx['layer8.weight'], self.idx['layer8.bias'] = (torch.arange(10), second_channels), torch.arange(10)
+        
+    def get_idx_aware_weight(self, rate, topmode, weights):
+        """基于权重大小选择重要通道"""
+        start_channels = (torch.arange(3))
+        weight_s = weights['layer1.0.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 64), topmode)
+        self.idx['layer1.0.0.weight'], self.idx['layer1.0.0.bias'] = (first_channels, start_channels, torch.arange(3),
+                                                                        torch.arange(3)), first_channels
+        weight_s = weights['layer1.1.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 64), topmode)
+        self.idx['layer1.1.0.weight'], self.idx['layer1.1.0.bias'] = (second_channels, first_channels, torch.arange(3),
+                                                                        torch.arange(3)), second_channels
+        weight_s = weights['layer2.0.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 128), topmode)
+        self.idx['layer2.0.0.weight'], self.idx['layer2.0.0.bias'] = (first_channels, second_channels, torch.arange(3),
+                                                                        torch.arange(3)), first_channels
+        weight_s = weights['layer2.1.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 128), topmode)
+        self.idx['layer2.1.0.weight'], self.idx['layer2.1.0.bias'] = (second_channels, first_channels, torch.arange(3),
+                                                                        torch.arange(3)), second_channels
+        weight_s = weights['layer3.0.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 256), topmode)
+        self.idx['layer3.0.0.weight'], self.idx['layer3.0.0.bias'] = (first_channels, second_channels, torch.arange(3),
+                                                                        torch.arange(3)), first_channels
+        weight_s = weights['layer3.1.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 256), topmode)
+        self.idx['layer3.1.0.weight'], self.idx['layer3.1.0.bias'] = (second_channels, first_channels, torch.arange(3),
+                                                                        torch.arange(3)), second_channels
+        weight_s = weights['layer3.2.0.weight']
+        third_channels = get_topk_index(weight_s, int(rate * 256), topmode)
+        self.idx['layer3.2.0.weight'], self.idx['layer3.2.0.bias'] = (third_channels, second_channels, torch.arange(3),
+                                                                        torch.arange(3)), third_channels
+        weight_s = weights['layer4.0.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer4.0.0.weight'], self.idx['layer4.0.0.bias'] = (first_channels, third_channels, torch.arange(3),
+                                                                        torch.arange(3)), first_channels
+        weight_s = weights['layer4.1.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer4.1.0.weight'], self.idx['layer4.1.0.bias'] = (second_channels, first_channels, torch.arange(3),
+                                                                        torch.arange(3)), second_channels
+        weight_s = weights['layer4.2.0.weight']
+        third_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer4.2.0.weight'], self.idx['layer4.2.0.bias'] = (third_channels, second_channels, torch.arange(3),
+                                                                        torch.arange(3)), third_channels
+        weight_s = weights['layer5.0.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer5.0.0.weight'], self.idx['layer5.0.0.bias'] = (first_channels, third_channels, torch.arange(3),
+                                                                        torch.arange(3)), first_channels
+        weight_s = weights['layer5.1.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer5.1.0.weight'], self.idx['layer5.1.0.bias'] = (second_channels, first_channels, torch.arange(3),
+                                                                        torch.arange(3)), second_channels
+        weight_s = weights['layer5.2.0.weight']
+        third_channels = get_topk_index(weight_s, int(rate * 512), topmode)
+        self.idx['layer5.2.0.weight'], self.idx['layer5.2.0.bias'] = (third_channels, second_channels, torch.arange(3),
+                                                                        torch.arange(3)), third_channels
+        weight_s = weights['layer6.0.weight']
+        first_channels = get_topk_index(weight_s, int(rate * 256), topmode)
+        self.idx['layer6.0.weight'], self.idx['layer6.0.bias'] = (first_channels, third_channels), first_channels
+        weight_s = weights['layer7.0.weight']
+        second_channels = get_topk_index(weight_s, int(rate * 128), topmode)
+        self.idx['layer7.0.weight'], self.idx['layer7.0.bias'] = (second_channels, first_channels), second_channels
+        self.idx['layer8.weight'], self.idx['layer8.bias'] = (torch.arange(10), second_channels), torch.arange(10)
 
     def get_idx_roll(self, rate):
         start_channels = (torch.arange(3))

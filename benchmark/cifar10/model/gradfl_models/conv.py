@@ -188,6 +188,34 @@ class Conv(FModule):
             first_channels = second_channels
         self.idx['linear.weight'] = (torch.arange(self.classes_size), first_channels)
         self.idx['linear.bias'] = torch.arange(self.classes_size)
+        
+    def get_idx_aware_weight(self, rate, topmode, weights):
+        """基于权重大小选择重要通道"""
+        start_channels = (torch.arange(self.data_shape[0]))
+        weight_s = weights['conv.weight']
+        first_channels = get_top_index(weight_s, int(rate * self.hidden_size[0]), topmode)
+        self.idx['conv.weight'], self.idx['conv.bias'] = (first_channels, start_channels), first_channels
+        self.idx['norm.weight'], self.idx['norm.bias'] = first_channels, first_channels
+        seq_index = [1, 2, 3]
+        for s in seq_index:
+            param_name = 'layer' + str(s)
+            if s == 1:
+                layer_name = 'layer1.'
+            elif s == 2:
+                layer_name = 'layer2.'
+            elif s == 3:
+                layer_name = 'layer3.'
+            else:
+                raise ValueError('error')
+            weight_f = weights[layer_name + 'conv.weight']
+            second_channels = get_top_index(weight_f, int(rate * self.hidden_size[s]), topmode)
+            self.idx[param_name + '.conv.weight'], self.idx[param_name + '.conv.bias'] = \
+                (second_channels, first_channels), second_channels
+            self.idx[param_name + '.norm.weight'], self.idx[param_name + '.norm.bias'] = \
+                second_channels, second_channels
+            first_channels = second_channels
+        self.idx['linear.weight'] = (torch.arange(self.classes_size), first_channels)
+        self.idx['linear.bias'] = torch.arange(self.classes_size)
 
     def get_idx_roll(self, rate):
         start_channels = (torch.arange(self.data_shape[0]))

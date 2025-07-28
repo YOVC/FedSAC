@@ -137,6 +137,9 @@ class Server(BasicServer):
             elif self.mode == 'fedavg':
                 # 完整模型（FedAvg基准）
                 self.construct_fedavg_submodel(idx)
+            elif self.mode == 'awareWeight':
+                # 基于权重大小的子模型生成
+                self.construct_weight_aware_submodel(idx, rate)
             else:
                 raise ValueError(f"不支持的子模型生成模式: {self.mode}")
     
@@ -248,6 +251,29 @@ class Server(BasicServer):
         # 保存子模型形状信息
         self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
     
+    def construct_weight_aware_submodel(self, client_idx, rate):
+        """基于权重大小的子模型生成"""
+        # 收集模型权重信息
+        weights = {}
+        for name, param in self.model.named_parameters():
+            if 'weight' in name and (param.dim() > 1):
+                # 使用权重的绝对值作为重要性指标
+                weights[name] = param.data.abs().mean(dim=tuple(range(1, param.dim()))).clone()
+        
+        # 使用模型的get_idx_aware_weight方法基于权重大小生成子模型索引
+        self.model.get_idx_aware_weight(rate, self.select_mode, weights)
+        client_model_idx = copy.deepcopy(self.model.idx)
+        self.model.clear_idx()
+        
+        # 从全局模型中提取子模型参数
+        client_model_params = self.get_model_params(self.model, client_model_idx)
+        
+        # 加载参数到客户端子模型
+        self.client_submodels[client_idx].load_state_dict(client_model_params)
+        
+        # 保存子模型形状信息
+        self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
+        
     def get_model_params(self, global_model, client_model_idx):
         """从全局模型中提取子模型参数"""
         client_model_params = OrderedDict()
