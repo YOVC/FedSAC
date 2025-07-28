@@ -15,6 +15,9 @@ import logging
 from collections import OrderedDict
 import random
 from benchmark.cifar10.model.gradfl_models.resnet import resnet18
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
 
 # 配置日志格式
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,6 +42,21 @@ class Server(BasicServer):
         # 数据集类别列表（用于梯度感知模式）
         self.class_list = None
         
+        # 用于绘图的数据存储
+        self.training_history = {
+            'rounds': [],
+            'local_training': {
+                'client_accuracies': [],  # 每轮每个客户端的准确率
+                'avg_accuracy': [],       # 每轮客户端平均准确率
+                'global_accuracy': []     # 每轮聚合后全局模型准确率
+            },
+            'submodel_assignment': {
+                'client_accuracies': [],  # 每轮子模型分配后每个客户端的准确率
+                'avg_accuracy': [],       # 每轮子模型分配后客户端平均准确率
+                'global_accuracy': []     # 每轮子模型分配后全局模型准确率（如果有的话）
+            }
+        }
+        
     def run(self):
         """
         Start the federated learning system where the global model is trained iteratively.
@@ -58,6 +76,10 @@ class Server(BasicServer):
 
         logging.info("==================== 训练完成 ====================")
         logger.time_end('Total Time Cost')
+        
+        # 绘制训练过程图表
+        self.plot_training_progress()
+        
         # save results as .json file
         logger.save(os.path.join('fedtask', self.option['task'], 'record', flw.output_filename(self.option, self)))
         return
@@ -75,10 +97,6 @@ class Server(BasicServer):
             # 为每个客户端设置完整的全局模型
             for idx in self.selected_clients:
                 self.construct_fedavg_submodel(idx)
-        else:
-            # 非第一轮，使用上一轮已经构建好的子模型进行训练
-            # 这里不需要额外操作，因为子模型已经在上一轮的最后构建好了
-            logging.info(f"使用上一轮构建的子模型进行训练")
         
         # 3. 客户端本地训练
         logging.info(f"开始客户端本地训练")
@@ -93,7 +111,7 @@ class Server(BasicServer):
 
         # 6. 为下一轮构建客户端子模型（第一轮之后）
         if t < self.num_rounds:  # 确保不在最后一轮构建子模型
-            logging.info(f"为下一轮构建客户端子模型")
+            logging.info(f"开始构建客户端子模型")
             self.construct_client_submodels(self.selected_clients)
 
         logging.info(f"开始测试子模型精度")
@@ -153,12 +171,6 @@ class Server(BasicServer):
             model = resnet18(hidden_size=hidden_size, num_blocks=num_blocks, num_classes=10, model_rate=mode_rate)
             # 确保模型在正确的设备上
             model = model.to(fmodule.device)
-            logging.info(f"创建新模型，保留比例: {mode_rate}")
-            # 打印模型第一层卷积的形状
-            for name, param in model.named_parameters():
-                if name == 'layer1.0.conv1.weight':
-                    logging.info(f"新模型 {name} 形状: {param.shape}")
-                    break
         return model
 
     def construct_gradient_aware_submodel(self, client_idx, rate):
@@ -430,6 +442,11 @@ class Server(BasicServer):
             avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
             avg_local_loss = sum(results['local_models']['losses']) / len(results['local_models']['losses'])
             logging.info(f"本地模型平均性能 - 精度: {avg_local_metric:.4f}, 损失: {avg_local_loss:.4f}")
+            
+            # 记录本地训练数据
+            if isTestGlobal:  # 只有在测试本地训练后的模型时才记录
+                self.training_history['local_training']['client_accuracies'].append(results['local_models']['eval_metrics'].copy())
+                self.training_history['local_training']['avg_accuracy'].append(avg_local_metric)
         
         if isTestGlobal:
             # 2. 测试聚合后的全局模型精度
@@ -453,8 +470,145 @@ class Server(BasicServer):
             results['global_model']['loss'] = loss
             
             logging.info(f"聚合后 全局模型性能 - 精度: {eval_metric:.4f}, 损失: {loss:.4f}")
+            
+            # 记录全局模型数据
+            self.training_history['local_training']['global_accuracy'].append(eval_metric)
+            # 记录轮次
+            if round_num not in self.training_history['rounds']:
+                self.training_history['rounds'].append(round_num)
+        else:
+            # 记录子模型分配后的数据
+            if results['local_models']['eval_metrics']:
+                avg_local_metric = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
+                self.training_history['submodel_assignment']['client_accuracies'].append(results['local_models']['eval_metrics'].copy())
+                self.training_history['submodel_assignment']['avg_accuracy'].append(avg_local_metric)
         
         return results
+
+    def plot_training_progress(self):
+        """绘制训练过程图表"""
+        if not self.training_history['rounds']:
+            logging.warning("没有训练数据可供绘制")
+            return
+        
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 创建保存图片的目录
+        save_dir = os.path.join('fedtask', self.option['task'], 'plots')
+        os.makedirs(save_dir, exist_ok=True)
+        
+        rounds = self.training_history['rounds']
+        
+        # 第一张图：本地训练后的准确率
+        plt.figure(figsize=(12, 8))
+        
+        # 绘制每个客户端的准确率曲线
+        client_accuracies = self.training_history['local_training']['client_accuracies']
+        if client_accuracies:
+            for client_idx in range(len(client_accuracies[0])):
+                client_acc_over_rounds = [round_acc[client_idx] for round_acc in client_accuracies]
+                plt.plot(rounds, client_acc_over_rounds, 
+                        label=f'客户端 {client_idx} (保留比例{self.fixed_keep_ratios[client_idx]:.1%})', 
+                        marker='o', markersize=4, alpha=0.7)
+        
+        # 绘制平均准确率
+        if self.training_history['local_training']['avg_accuracy']:
+            plt.plot(rounds, self.training_history['local_training']['avg_accuracy'], 
+                    label='客户端平均准确率', linewidth=3, color='red', marker='s', markersize=6)
+        
+        # 绘制全局模型准确率
+        if self.training_history['local_training']['global_accuracy']:
+            plt.plot(rounds, self.training_history['local_training']['global_accuracy'], 
+                    label='聚合后全局模型准确率', linewidth=3, color='black', marker='^', markersize=6)
+        
+        plt.xlabel('训练轮次')
+        plt.ylabel('准确率')
+        plt.title('本地训练后模型准确率变化')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # 保存第一张图
+        plot1_path = os.path.join(save_dir, 'local_training_accuracy.png')
+        plt.savefig(plot1_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logging.info(f"本地训练准确率图表已保存至: {plot1_path}")
+        
+        # 第二张图：子模型分配后的准确率
+        plt.figure(figsize=(12, 8))
+        
+        # 绘制每个客户端的子模型准确率曲线
+        submodel_accuracies = self.training_history['submodel_assignment']['client_accuracies']
+        if submodel_accuracies:
+            for client_idx in range(len(submodel_accuracies[0])):
+                client_acc_over_rounds = [round_acc[client_idx] for round_acc in submodel_accuracies]
+                # 子模型分配是在第1轮之后开始的，所以轮次从1开始
+                submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
+                if len(client_acc_over_rounds) == len(submodel_rounds):
+                    plt.plot(submodel_rounds, client_acc_over_rounds, 
+                            label=f'客户端 {client_idx} (保留比例{self.fixed_keep_ratios[client_idx]:.1%})', 
+                            marker='o', markersize=4, alpha=0.7)
+        
+        # 绘制子模型平均准确率
+        if self.training_history['submodel_assignment']['avg_accuracy']:
+            submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
+            if len(self.training_history['submodel_assignment']['avg_accuracy']) == len(submodel_rounds):
+                plt.plot(submodel_rounds, self.training_history['submodel_assignment']['avg_accuracy'], 
+                        label='子模型平均准确率', linewidth=3, color='red', marker='s', markersize=6)
+        
+        plt.xlabel('训练轮次')
+        plt.ylabel('准确率')
+        plt.title('子模型分配后模型准确率变化')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # 保存第二张图
+        plot2_path = os.path.join(save_dir, 'submodel_assignment_accuracy.png')
+        plt.savefig(plot2_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logging.info(f"子模型分配准确率图表已保存至: {plot2_path}")
+        
+        # 创建综合对比图
+        plt.figure(figsize=(15, 10))
+        
+        # 子图1：本地训练后准确率
+        plt.subplot(2, 1, 1)
+        if self.training_history['local_training']['avg_accuracy']:
+            plt.plot(rounds, self.training_history['local_training']['avg_accuracy'], 
+                    label='本地训练后平均准确率', linewidth=2, color='blue', marker='o')
+        if self.training_history['local_training']['global_accuracy']:
+            plt.plot(rounds, self.training_history['local_training']['global_accuracy'], 
+                    label='聚合后全局模型准确率', linewidth=2, color='green', marker='^')
+        plt.xlabel('训练轮次')
+        plt.ylabel('准确率')
+        plt.title('本地训练后模型准确率')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # 子图2：子模型分配后准确率
+        plt.subplot(2, 1, 2)
+        if self.training_history['submodel_assignment']['avg_accuracy']:
+            submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
+            if len(self.training_history['submodel_assignment']['avg_accuracy']) == len(submodel_rounds):
+                plt.plot(submodel_rounds, self.training_history['submodel_assignment']['avg_accuracy'], 
+                        label='子模型分配后平均准确率', linewidth=2, color='red', marker='s')
+        plt.xlabel('训练轮次')
+        plt.ylabel('准确率')
+        plt.title('子模型分配后模型准确率')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # 保存综合对比图
+        plot3_path = os.path.join(save_dir, 'training_progress_comparison.png')
+        plt.savefig(plot3_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logging.info(f"训练过程对比图表已保存至: {plot3_path}")
+
 class Client(BasicClient):
     def __init__(self, option, name='', train_data=None, valid_data=None):
         super(Client, self).__init__(option, name, train_data, valid_data)
