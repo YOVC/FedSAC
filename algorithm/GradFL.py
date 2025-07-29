@@ -396,14 +396,13 @@ class Server(BasicServer):
         return results
 
     def plot_training_progress(self):
-        """绘制训练过程图表"""
+        """绘制美化的训练过程图表"""
         if not self.training_history['rounds']:
             logging.warning("没有训练数据可供绘制")
             return
         
-        # 设置中文字体
-        plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
+        # 设置字体和样式
+        self._setup_plot_style()
         
         # 创建保存图片的目录
         save_dir = os.path.join('fedtask', self.option['task'], 'plots')
@@ -412,113 +411,244 @@ class Server(BasicServer):
         rounds = self.training_history['rounds']
         
         # 第一张图：本地训练后的准确率
-        plt.figure(figsize=(12, 8))
+        self._plot_local_training_accuracy(rounds, save_dir)
+        
+        # 第二张图：子模型分配后的准确率
+        self._plot_submodel_assignment_accuracy(rounds, save_dir)
+        
+    
+    def _setup_plot_style(self):
+        """设置绘图样式和字体"""
+        # 强制设置中文字体
+        import matplotlib.font_manager as fm
+        
+        # 清除字体缓存并重建
+        try:
+            fm._rebuild()
+        except:
+            pass
+        
+        # 直接设置中文字体，优先使用Microsoft YaHei
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'Arial Unicode MS', 'DejaVu Sans', 'Arial']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 强制设置字体编码
+        plt.rcParams['font.family'] = 'sans-serif'
+        
+        # 设置现代化样式
+        try:
+            plt.style.use('seaborn-v0_8-whitegrid')
+        except:
+            try:
+                plt.style.use('seaborn-whitegrid')
+            except:
+                plt.style.use('default')
+        
+        # 设置全局参数
+        plt.rcParams.update({
+            'figure.facecolor': 'white',
+            'axes.facecolor': '#f8f9fa',
+            'axes.edgecolor': '#dee2e6',
+            'axes.linewidth': 1.2,
+            'grid.color': '#e9ecef',
+            'grid.alpha': 0.7,
+            'text.color': '#212529',
+            'axes.labelcolor': '#495057',
+            'xtick.color': '#6c757d',
+            'ytick.color': '#6c757d',
+            'font.size': 12,
+            'axes.titlesize': 16,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 11,
+            'figure.titlesize': 18
+        })
+        
+        # 验证字体设置
+        try:
+            # 创建一个临时图形来测试中文字体
+            test_fig, test_ax = plt.subplots(figsize=(1, 1))
+            test_ax.text(0.5, 0.5, '测试', fontsize=12)
+            plt.close(test_fig)
+        except Exception as e:
+            # 如果中文字体仍然有问题，回退到英文标签
+            print(f"中文字体设置警告: {e}")
+            self.use_english_labels = True
+        else:
+            self.use_english_labels = False
+    
+    def _get_color_palette(self, n_colors):
+        """获取美观的颜色调色板"""
+        # 使用专业的颜色调色板
+        colors = [
+            '#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6A994E',
+            '#577590', '#F3722C', '#F8961E', '#F9844A', '#F9C74F',
+            '#90E0EF', '#00B4D8', '#0077B6', '#023E8A', '#03045E'
+        ]
+        return colors[:n_colors] if n_colors <= len(colors) else colors * (n_colors // len(colors) + 1)
+    
+    def _plot_local_training_accuracy(self, rounds, save_dir):
+        """绘制本地训练后的准确率图"""
+        fig, ax = plt.subplots(figsize=(14, 9))
+        
+        # 设置背景渐变
+        ax.set_facecolor('#f8f9fa')
+        
+        client_accuracies = self.training_history['local_training']['client_accuracies']
+        colors = self._get_color_palette(len(client_accuracies[0]) if client_accuracies else 0)
+        
+        # 根据字体设置选择标签语言
+        if hasattr(self, 'use_english_labels') and self.use_english_labels:
+            # 英文标签
+            xlabel = 'Training Round'
+            ylabel = 'Accuracy'
+            title = 'Model Accuracy After Local Training'
+            legend_title = 'Models'
+            client_label = lambda i: f'Client {i} (Keep: {self.fixed_keep_ratios[i]:.1%})'
+            avg_label = 'Average Client Accuracy'
+            global_label = 'Global Model Accuracy'
+        else:
+            # 中文标签
+            xlabel = '训练轮次'
+            ylabel = '准确率'
+            title = '本地训练后模型准确率'
+            legend_title = '模型类型'
+            client_label = lambda i: f'客户端 {i} (保留比例: {self.fixed_keep_ratios[i]:.1%})'
+            avg_label = '客户端平均准确率'
+            global_label = '聚合模型准确率'
         
         # 绘制每个客户端的准确率曲线
-        client_accuracies = self.training_history['local_training']['client_accuracies']
         if client_accuracies:
             for client_idx in range(len(client_accuracies[0])):
                 client_acc_over_rounds = [round_acc[client_idx] for round_acc in client_accuracies]
-                plt.plot(rounds, client_acc_over_rounds, 
-                        label=f'客户端 {client_idx} (保留比例{self.fixed_keep_ratios[client_idx]:.1%})', 
-                        marker='o', markersize=4, alpha=0.7)
+                ax.plot(rounds, client_acc_over_rounds, 
+                       label=client_label(client_idx), 
+                       color=colors[client_idx], marker='o', markersize=5, 
+                       linewidth=2.5, alpha=0.8, markerfacecolor='white', 
+                       markeredgewidth=2, markeredgecolor=colors[client_idx])
         
-        # 绘制平均准确率
+        # 绘制平均准确率 - 突出显示
         if self.training_history['local_training']['avg_accuracy']:
-            plt.plot(rounds, self.training_history['local_training']['avg_accuracy'], 
-                    label='客户端平均准确率', linewidth=3, color='red', marker='s', markersize=6)
+            ax.plot(rounds, self.training_history['local_training']['avg_accuracy'], 
+                   label=avg_label, linewidth=4, color='#E63946', 
+                   marker='s', markersize=8, markerfacecolor='white', 
+                   markeredgewidth=3, markeredgecolor='#E63946', alpha=0.9)
         
-        # 绘制全局模型准确率
+        # 绘制全局模型准确率 - 突出显示
         if self.training_history['local_training']['global_accuracy']:
-            plt.plot(rounds, self.training_history['local_training']['global_accuracy'], 
-                    label='聚合后全局模型准确率', linewidth=3, color='black', marker='^', markersize=6)
+            ax.plot(rounds, self.training_history['local_training']['global_accuracy'], 
+                   label=global_label, linewidth=4, color='#2A9D8F', 
+                   marker='^', markersize=8, markerfacecolor='white', 
+                   markeredgewidth=3, markeredgecolor='#2A9D8F', alpha=0.9)
         
-        plt.xlabel('训练轮次')
-        plt.ylabel('准确率')
-        plt.title('本地训练后模型准确率变化')
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True, alpha=0.3)
+        # 美化图表
+        ax.set_xlabel(xlabel, fontsize=14, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=14, fontweight='bold')
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        
+        # 设置图例
+        legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
+                          frameon=True, fancybox=True, shadow=True, 
+                          fontsize=11, title=legend_title, title_fontsize=12)
+        legend.get_frame().set_facecolor('#ffffff')
+        legend.get_frame().set_alpha(0.9)
+        
+        # 设置网格
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=1)
+        ax.set_axisbelow(True)
+        
+        # 设置坐标轴
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(1.5)
+        ax.spines['bottom'].set_linewidth(1.5)
+        
         plt.tight_layout()
         
-        # 保存第一张图
+        # 保存图片
         plot1_path = os.path.join(save_dir, 'local_training_accuracy.png')
-        plt.savefig(plot1_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot1_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
         logging.info(f"本地训练准确率图表已保存至: {plot1_path}")
+    
+    def _plot_submodel_assignment_accuracy(self, rounds, save_dir):
+        """绘制子模型分配后的准确率图"""
+        fig, ax = plt.subplots(figsize=(14, 9))
         
-        # 第二张图：子模型分配后的准确率
-        plt.figure(figsize=(12, 8))
+        # 设置背景
+        ax.set_facecolor('#f8f9fa')
+        
+        submodel_accuracies = self.training_history['submodel_assignment']['client_accuracies']
+        colors = self._get_color_palette(len(submodel_accuracies[0]) if submodel_accuracies else 0)
+        
+        # 根据字体设置选择标签语言
+        if hasattr(self, 'use_english_labels') and self.use_english_labels:
+            # 英文标签
+            xlabel = 'Training Round'
+            ylabel = 'Accuracy'
+            title = 'Model Accuracy After Submodel Assignment'
+            legend_title = 'Submodels'
+            client_label = lambda i: f'Client {i} (Keep: {self.fixed_keep_ratios[i]:.1%})'
+            avg_label = 'Average Submodel Accuracy'
+        else:
+            # 中文标签
+            xlabel = '训练轮次'
+            ylabel = '准确率'
+            title = '子模型分配后模型准确率'
+            legend_title = '子模型类型'
+            client_label = lambda i: f'客户端 {i} (保留比例: {self.fixed_keep_ratios[i]:.1%})'
+            avg_label = '子模型平均准确率'
         
         # 绘制每个客户端的子模型准确率曲线
-        submodel_accuracies = self.training_history['submodel_assignment']['client_accuracies']
         if submodel_accuracies:
             for client_idx in range(len(submodel_accuracies[0])):
                 client_acc_over_rounds = [round_acc[client_idx] for round_acc in submodel_accuracies]
-                # 子模型分配是在第1轮之后开始的，所以轮次从1开始
                 submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
                 if len(client_acc_over_rounds) == len(submodel_rounds):
-                    plt.plot(submodel_rounds, client_acc_over_rounds, 
-                            label=f'客户端 {client_idx} (保留比例{self.fixed_keep_ratios[client_idx]:.1%})', 
-                            marker='o', markersize=4, alpha=0.7)
+                    ax.plot(submodel_rounds, client_acc_over_rounds, 
+                           label=client_label(client_idx), 
+                           color=colors[client_idx], marker='o', markersize=5, 
+                           linewidth=2.5, alpha=0.8, markerfacecolor='white', 
+                           markeredgewidth=2, markeredgecolor=colors[client_idx])
         
         # 绘制子模型平均准确率
         if self.training_history['submodel_assignment']['avg_accuracy']:
             submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
             if len(self.training_history['submodel_assignment']['avg_accuracy']) == len(submodel_rounds):
-                plt.plot(submodel_rounds, self.training_history['submodel_assignment']['avg_accuracy'], 
-                        label='子模型平均准确率', linewidth=3, color='red', marker='s', markersize=6)
+                ax.plot(submodel_rounds, self.training_history['submodel_assignment']['avg_accuracy'], 
+                       label=avg_label, linewidth=4, color='#F77F00', 
+                       marker='s', markersize=8, markerfacecolor='white', 
+                       markeredgewidth=3, markeredgecolor='#F77F00', alpha=0.9)
         
-        plt.xlabel('训练轮次')
-        plt.ylabel('准确率')
-        plt.title('子模型分配后模型准确率变化')
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True, alpha=0.3)
+        # 美化图表
+        ax.set_xlabel(xlabel, fontsize=14, fontweight='bold')
+        ax.set_ylabel(ylabel, fontsize=14, fontweight='bold')
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        
+        # 设置图例
+        legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
+                          frameon=True, fancybox=True, shadow=True, 
+                          fontsize=11, title=legend_title, title_fontsize=12)
+        legend.get_frame().set_facecolor('#ffffff')
+        legend.get_frame().set_alpha(0.9)
+        
+        # 设置网格和坐标轴
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=1)
+        ax.set_axisbelow(True)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(1.5)
+        ax.spines['bottom'].set_linewidth(1.5)
+        
         plt.tight_layout()
         
-        # 保存第二张图
+        # 保存图片
         plot2_path = os.path.join(save_dir, 'submodel_assignment_accuracy.png')
-        plt.savefig(plot2_path, dpi=300, bbox_inches='tight')
+        plt.savefig(plot2_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
         logging.info(f"子模型分配准确率图表已保存至: {plot2_path}")
-        
-        # 创建综合对比图
-        plt.figure(figsize=(15, 10))
-        
-        # 子图1：本地训练后准确率
-        plt.subplot(2, 1, 1)
-        if self.training_history['local_training']['avg_accuracy']:
-            plt.plot(rounds, self.training_history['local_training']['avg_accuracy'], 
-                    label='本地训练后平均准确率', linewidth=2, color='blue', marker='o')
-        if self.training_history['local_training']['global_accuracy']:
-            plt.plot(rounds, self.training_history['local_training']['global_accuracy'], 
-                    label='聚合后全局模型准确率', linewidth=2, color='green', marker='^')
-        plt.xlabel('训练轮次')
-        plt.ylabel('准确率')
-        plt.title('本地训练后模型准确率')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # 子图2：子模型分配后准确率
-        plt.subplot(2, 1, 2)
-        if self.training_history['submodel_assignment']['avg_accuracy']:
-            submodel_rounds = rounds[1:] if len(rounds) > 1 else rounds
-            if len(self.training_history['submodel_assignment']['avg_accuracy']) == len(submodel_rounds):
-                plt.plot(submodel_rounds, self.training_history['submodel_assignment']['avg_accuracy'], 
-                        label='子模型分配后平均准确率', linewidth=2, color='red', marker='s')
-        plt.xlabel('训练轮次')
-        plt.ylabel('准确率')
-        plt.title('子模型分配后模型准确率')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # 保存综合对比图
-        plot3_path = os.path.join(save_dir, 'training_progress_comparison.png')
-        plt.savefig(plot3_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        logging.info(f"训练过程对比图表已保存至: {plot3_path}")
-
+    
 class Client(BasicClient):
     def __init__(self, option, name='', train_data=None, valid_data=None):
         super(Client, self).__init__(option, name, train_data, valid_data)
