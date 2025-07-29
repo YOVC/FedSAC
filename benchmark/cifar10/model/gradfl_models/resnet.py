@@ -116,9 +116,10 @@ class BasicBlock(nn.Module):
         else:
             raise ValueError(f'Unsupported weight_mode: {weight_mode}')
         
-        # 选择top-k重要的通道
+        # 选择top-k重要的通道，并按原始位置排序
         k = int(rate * self.out_channels)
         second_channels = torch.topk(weight_importance, k)[1]
+        second_channels = torch.sort(second_channels)[0]  # 按原始位置排序
         
         self.idx[param_name + '.conv1.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
         self.idx[param_name + '.n1.weight'], self.idx[param_name + '.n1.bias'] = second_channels, second_channels
@@ -133,6 +134,7 @@ class BasicBlock(nn.Module):
             weight_importance = torch.max(torch.abs(conv2_weight).view(conv2_weight.size(0), -1), dim=1)[0]
         
         third_channels = torch.topk(weight_importance, k)[1]
+        third_channels = torch.sort(third_channels)[0]  # 按原始位置排序
         self.idx[param_name + '.conv2.weight'] = (third_channels, second_channels, torch.arange(3), torch.arange(3))
         self.idx[param_name + '.n2.weight'], self.idx[param_name + '.n2.bias'] = third_channels, third_channels
         
@@ -246,6 +248,7 @@ class Model(FModule):
         
         k = int(rate * self.conv.weight.shape[0])
         first_channels = torch.topk(weight_importance, k)[1]
+        first_channels = torch.sort(first_channels)[0]  # 按原始位置排序
         
         self.idx['conv.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
         self.idx['n1.weight'], self.idx['n1.bias'] = first_channels, first_channels
@@ -308,7 +311,7 @@ def get_topk_index_by_weight(weight_tensor, k, weight_mode='l2'):
         k: 选择的数量
         weight_mode: 权重计算模式 ('l2', 'l1', 'max')
     Returns:
-        top-k索引
+        top-k索引（按原始位置排序）
     """
     if weight_mode == 'l2':
         if weight_tensor.dim() > 2:  # conv层权重
@@ -328,7 +331,9 @@ def get_topk_index_by_weight(weight_tensor, k, weight_mode='l2'):
     else:
         raise ValueError(f'Unsupported weight_mode: {weight_mode}')
     
-    return torch.topk(importance, k)[1]
+    # 选择top-k索引并按原始位置排序
+    topk_indices = torch.topk(importance, k)[1]
+    return torch.sort(topk_indices)[0]
 
 def get_topk_index(x, k, topmode):
     if topmode == 'absmax':
