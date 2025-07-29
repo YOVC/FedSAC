@@ -151,6 +151,13 @@ class Server(BasicServer):
             elif self.mode == 'awareWeight':
                 # 基于权重大小的子模型生成
                 self.construct_weight_submodel(idx, rate)
+            elif self.mode == 'neuron':
+                # 基于神经元重要性的子模型生成
+                if self.validation is None:
+                    logging.warning("没有验证数据，跳过神经元重要性评估")
+                    return
+                data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
+                self.construct_neuron_submodel(idx, rate, data_loader, self.calculator)
             else:
                 raise ValueError(f"不支持的子模型生成模式: {self.mode}")
     
@@ -207,6 +214,25 @@ class Server(BasicServer):
         """基于权重大小的子模型生成"""
         # 使用模型的get_idx_weight方法生成子模型索引
         self.model.get_idx_weight(rate, 'l2')
+        client_model_idx = copy.deepcopy(self.model.idx)
+        self.model.clear_idx()
+        
+        # 从全局模型中提取子模型参数
+        client_model_params = self.get_model_params(self.model, client_model_idx)
+        
+        # 创建新的子模型实例
+        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
+        
+        # 加载参数到客户端子模型
+        self.client_submodels[client_idx].load_state_dict(client_model_params)
+        
+        # 保存子模型形状信息
+        self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
+    
+    def construct_neuron_submodel(self, client_idx, rate, data_loader, calculator):
+        """基于神经元重要性的子模型生成"""
+        # 使用模型的get_idx_neuron方法生成子模型索引
+        self.model.get_idx_neuron(rate, data_loader, calculator)
         client_model_idx = copy.deepcopy(self.model.idx)
         self.model.clear_idx()
         

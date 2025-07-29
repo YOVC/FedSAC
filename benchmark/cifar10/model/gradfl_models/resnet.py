@@ -145,6 +145,49 @@ class BasicBlock(nn.Module):
         
         return third_channels
 
+    def get_idx_neuron(self, original_loss, first_channels, rate, param_name, data_loader, calculator, model=None):
+        """
+        基于神经元重要性评估选择索引（借鉴FedSAC方法）
+        Args:
+            first_channels: 输入通道索引
+            rate: 保留比例
+            param_name: 参数名称前缀
+            data_loader: 验证数据加载器
+            calculator: 计算器对象
+            model: 完整模型（用于损失计算）
+        """
+        # 如果没有传入模型，使用self作为模型
+        if model is None:
+            model = self
+            
+        # 计算原始损失
+        k = int(rate * self.out_channels)
+        
+        # 评估conv1层神经元重要性
+        conv1_importance = evaluate_layer_neuron_importance(
+            model, self.conv1, data_loader, calculator, original_loss, self.out_channels
+        )
+        second_channels = select_topk_channels(conv1_importance, k, self.out_channels)
+        
+        self.idx[param_name + '.conv1.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+        self.idx[param_name + '.n1.weight'], self.idx[param_name + '.n1.bias'] = second_channels, second_channels
+        
+        # 评估conv2层神经元重要性
+        conv2_importance = evaluate_layer_neuron_importance(
+            model, self.conv2, data_loader, calculator, original_loss, self.out_channels
+        )
+        third_channels = select_topk_channels(conv2_importance, k, self.out_channels)
+        
+        self.idx[param_name + '.conv2.weight'] = (third_channels, second_channels, torch.arange(3), torch.arange(3))
+        self.idx[param_name + '.n2.weight'], self.idx[param_name + '.n2.bias'] = third_channels, third_channels
+        
+        # 处理shortcut连接
+        if len(self.shortcut) != 0:
+            self.idx[param_name + '.shortcut.0.weight'] = (third_channels, first_channels, torch.arange(1), torch.arange(1))
+            self.idx[param_name + '.shortcut.2.weight'], self.idx[param_name + '.shortcut.2.bias'] = third_channels, third_channels
+        
+        return third_channels
+
     def clear_idx(self):
         self.idx.clear()
 
@@ -277,6 +320,42 @@ class Model(FModule):
         self.idx['linear.weight'] = (torch.arange(self.linear.weight.shape[0]), first_channels)
         self.idx['linear.bias'] = torch.arange(self.linear.weight.shape[0])
 
+    def get_idx_neuron(self, rate, data_loader, calculator):
+        """
+        基于神经元重要性评估选择索引（借鉴FedSAC方法）
+        Args:
+            rate: 保留比例
+            data_loader: 验证数据加载器
+            calculator: 计算器对象
+        """
+        # 计算原始损失
+        original_loss = calculate_average_loss(self, data_loader, calculator)
+        start_channels = (torch.arange(3))
+        
+        # 评估第一个卷积层神经元重要性
+        k = int(rate * self.conv.weight.shape[0])
+        conv_importance = evaluate_layer_neuron_importance(
+            self, self.conv, data_loader, calculator, original_loss, self.conv.weight.shape[0]
+        )
+        first_channels = select_topk_channels(conv_importance, k, self.conv.weight.shape[0])
+        
+        self.idx['conv.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+        self.idx['n1.weight'], self.idx['n1.bias'] = first_channels, first_channels
+        
+        # 处理各个layer
+        fun_name = 'self.layer'
+        seq_index = ['1', '2', '3', '4']
+        for s in seq_index:
+            param_name = 'layer' + s
+            for i, blc in enumerate(eval(fun_name + s)):
+                param_sub_name = param_name + '.' + str(i)
+                first_channels = blc.get_idx_neuron(original_loss, first_channels, rate, param_sub_name, data_loader, calculator, self)
+                self.idx.update(blc.idx)
+        
+        # 对于线性层，我们保留所有输出类别（因为这是分类层）
+        self.idx['linear.weight'] = (torch.arange(self.linear.weight.shape[0]), first_channels)
+        self.idx['linear.bias'] = torch.arange(self.linear.weight.shape[0])
+
     def clear_idx(self):
         self.idx.clear()
         for i, blc in enumerate(self.layer1):
@@ -302,6 +381,67 @@ def resnet18(hidden_size, num_blocks, num_classes, track=False, model_rate=1):
     model = Model(hidden_size, BasicBlock, num_blocks, num_classes, model_rate, track)
     model.apply(init_param)
     return model
+
+# 辅助函数
+
+def calculate_average_loss(model, data_loader, calculator):
+    """计算模型在数据集上的平均损失"""
+    model.eval()
+    total_loss = 0
+    total_samples = 0
+    for batch_data in data_loader:
+        _, loss = calculator.test(model, batch_data)
+        total_loss += loss * len(batch_data[1])
+        total_samples += len(batch_data[1])
+    return total_loss / total_samples
+
+def evaluate_layer_neuron_importance(model, layer, data_loader, calculator, original_loss, num_neurons):
+    """评估单个层的神经元重要性"""
+    importance_scores = []
+    
+    # 保存原始权重
+    original_weight = layer.weight.data.clone()
+    original_bias = None
+    if layer.bias is not None:
+        original_bias = layer.bias.data.clone()
+    
+    for neuron_idx in range(num_neurons):
+        # 将该神经元的权重设为0
+        if layer.weight.dim() > 2:  # 卷积层
+            layer.weight.data[neuron_idx, :, :, :] = 0
+        else:  # 线性层
+            layer.weight.data[neuron_idx, :] = 0
+        
+        if layer.bias is not None:
+            layer.bias.data[neuron_idx] = 0
+            
+        # 计算修改后的损失
+        modified_loss = calculate_average_loss(model, data_loader, calculator)
+        
+        # 计算重要性分数
+        importance = max(modified_loss - original_loss, 0)
+        importance_scores.append(importance)
+        
+        # 恢复原始权重
+        if layer.weight.dim() > 2:  # 卷积层
+            layer.weight.data[neuron_idx, :, :, :] = original_weight[neuron_idx, :, :, :]
+        else:  # 线性层
+            layer.weight.data[neuron_idx, :] = original_weight[neuron_idx, :]
+        
+        if layer.bias is not None:
+            layer.bias.data[neuron_idx] = original_bias[neuron_idx]
+    
+    return importance_scores
+
+def select_topk_channels(importance_scores, k, num_total):
+    """基于重要性分数选择top-k通道"""
+    importance_tensor = torch.tensor(importance_scores)
+    if importance_tensor.sum() == 0:
+        # 如果所有重要性都为0，则随机选择
+        selected_channels = torch.randperm(num_total)[:k]
+    else:
+        selected_channels = torch.topk(importance_tensor, k)[1]
+    return torch.sort(selected_channels)[0]  # 按原始位置排序
 
 def get_topk_index_by_weight(weight_tensor, k, weight_mode='l2'):
     """
