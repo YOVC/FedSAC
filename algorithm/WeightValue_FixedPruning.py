@@ -1,3 +1,18 @@
+"""
+WeightValue_FixedPruning.py - 基于权重幅度的逐层固定裁剪联邦学习算法
+
+主要修改（逐层裁剪版本）：
+1. evaluate_neuron_importance(): 改为逐层评估神经元重要性，每层独立计算重要性排序
+2. allocate_submodels_with_fixed_pruning(): 改为逐层裁剪，每层独立应用相同的裁剪比例
+3. apply_layer_neuron_mask(): 新增方法，对指定层应用神经元掩码
+4. dynamic_aggregation(): 支持逐层裁剪的动态聚合，每层神经元独立计算频率和权重
+
+逐层裁剪的优势：
+- 每层内的神经元重要性排序更加公平，避免了不同层之间参数规模差异的影响
+- 保持了网络的层级结构完整性，每层都保留一定比例的神经元
+- 更好地保持模型的表达能力和训练稳定性
+"""
+
 from utils import fmodule
 from .fedbase import BasicServer, BasicClient
 import copy
@@ -91,19 +106,21 @@ class Server(BasicServer):
 
     def evaluate_neuron_importance(self):
         """
-        神经元重要性评估模块
-        使用平均权重幅度（L2范数除以参数数量）评估每个神经元的重要性
-        这样可以消除不同层神经元参数数量差异的影响，确保公平比较
-        平均权重幅度越大表示该神经元越重要
+        逐层神经元重要性评估模块
+        使用平均权重幅度（L2范数除以参数数量）评估每层中每个神经元的重要性
+        为每一层单独计算神经元重要性排序，实现逐层裁剪
         """
         self.model.eval()
         
-        # 构建神经元到参数的映射
-        neuron_to_param_mapping = {}  # 记录每个神经元对应的参数索引
-        neuron_idx = 0
-        param_index = 0
+        # 存储每层的神经元重要性信息
+        self.layer_neuron_importance = {}  # {layer_name: importance_scores}
+        self.layer_neuron_percentiles = {}  # {layer_name: sorted_indices}
+        self.layer_info = {}  # {layer_name: {'num_neurons': int, 'start_idx': int}}
         
-        for layer_idx, (name, module) in enumerate(self.model.named_modules()):
+        layer_idx = 0
+        global_neuron_idx = 0
+        
+        for name, module in self.model.named_modules():
             if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
                 if isinstance(module, torch.nn.Linear):
                     num_neurons = module.out_features
@@ -112,124 +129,162 @@ class Server(BasicServer):
                     num_neurons = module.out_channels
                     params_per_neuron = module.in_channels * module.kernel_size[0] * module.kernel_size[1] + (1 if module.bias is not None else 0)
                 
-                for i in range(num_neurons):
-                    neuron_to_param_mapping[neuron_idx + i] = list(range(param_index, param_index + params_per_neuron))
-                    param_index += params_per_neuron
+                # 计算当前层每个神经元的重要性
+                layer_importance = []
                 
-                neuron_idx += num_neurons
-        
-        # 收集所有参数的权重
-        all_weights = []
-        for name, module in self.model.named_modules():
-            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
-                # 收集权重
-                all_weights.append(module.weight.detach().view(-1))
+                for neuron_idx in range(num_neurons):
+                    if isinstance(module, torch.nn.Linear):
+                        # 对于线性层，获取对应神经元的权重和偏置
+                        neuron_weights = module.weight.data[neuron_idx, :].detach()
+                        if module.bias is not None:
+                            neuron_bias = module.bias.data[neuron_idx].detach()
+                            neuron_params = torch.cat([neuron_weights.view(-1), neuron_bias.view(-1)])
+                        else:
+                            neuron_params = neuron_weights.view(-1)
+                    elif isinstance(module, torch.nn.Conv2d):
+                        # 对于卷积层，获取对应输出通道的权重和偏置
+                        neuron_weights = module.weight.data[neuron_idx, :, :, :].detach()
+                        if module.bias is not None:
+                            neuron_bias = module.bias.data[neuron_idx].detach()
+                            neuron_params = torch.cat([neuron_weights.view(-1), neuron_bias.view(-1)])
+                        else:
+                            neuron_params = neuron_weights.view(-1)
+                    
+                    # 计算平均权重幅度
+                    neuron_l2_norm = torch.norm(neuron_params, p=2).item()
+                    avg_neuron_l2_norm = neuron_l2_norm / len(neuron_params)
+                    layer_importance.append(avg_neuron_l2_norm)
                 
-                # 收集偏置（如果存在）
-                if module.bias is not None:
-                    all_weights.append(module.bias.detach().view(-1))
+                # 转换为tensor并处理
+                layer_importance = torch.tensor(layer_importance)
+                
+                # 处理全零情况
+                if layer_importance.sum() == 0:
+                    layer_importance = torch.ones_like(layer_importance) * 0.0001
+                    logging.warning(f"层 {name} 所有神经元权重幅度为零，使用默认小值代替")
+                else:
+                    # 在层内归一化
+                    layer_importance = layer_importance / layer_importance.sum() * 100
+                
+                # 计算层内重要性排序（从小到大，优先裁剪重要性较小的神经元）
+                layer_percentiles = torch.argsort(layer_importance)
+                
+                # 存储层信息
+                self.layer_neuron_importance[name] = layer_importance
+                self.layer_neuron_percentiles[name] = layer_percentiles
+                self.layer_info[name] = {
+                    'num_neurons': num_neurons,
+                    'start_idx': global_neuron_idx
+                }
+                
+                logging.info(f"层 {name}: 神经元数={num_neurons}, "
+                           f"权重幅度范围=[{layer_importance.min().item():.6f}, {layer_importance.max().item():.6f}], "
+                           f"均值={layer_importance.mean().item():.6f}")
+                
+                global_neuron_idx += num_neurons
+                layer_idx += 1
         
-        all_weights = torch.cat(all_weights)
-        
-        # 为每个神经元计算权重幅度（平均L2范数）
-        neuron_importance = []
-        for neuron_id, param_indices in neuron_to_param_mapping.items():
-            neuron_weights = all_weights[param_indices]
-            # 使用平均权重幅度，消除不同层神经元参数数量差异的影响
-            neuron_l2_norm = torch.norm(neuron_weights, p=2).item()
-            avg_neuron_l2_norm = neuron_l2_norm / len(param_indices)  # 除以参数数量
-            neuron_importance.append(avg_neuron_l2_norm)
-        
-        # 转换为tensor并归一化重要性分数
-        self.neuron_importance = torch.tensor(neuron_importance)
-        if len(self.neuron_importance) > 0:
-            # 处理全零情况
-            if self.neuron_importance.sum() == 0:
-                # 如果所有重要性都为0，则赋予一个较小的重要性
-                self.neuron_importance = torch.ones_like(self.neuron_importance) * 0.0001
-                logging.warning("所有神经元权重幅度为零，使用默认小值代替")
-            else:
-                # 归一化到0-100范围
-                self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
-            
-            # 计算重要性百分位数，用于子模型构建
-            # 注意：这里使用正序排序（从小到大），优先裁剪权重幅度较小的神经元
-            self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
-            
-            logging.info(f"权重评估完成 - 总神经元数: {len(self.neuron_importance)}, "
-                        f"权重幅度范围: [{self.neuron_importance.min().item():.6f}, {self.neuron_importance.max().item():.6f}], "
-                        f"均值: {self.neuron_importance.mean().item():.6f}, 标准差: {self.neuron_importance.std().item():.6f}")
+        logging.info(f"逐层权重评估完成 - 总层数: {layer_idx}, 总神经元数: {global_neuron_idx}")
 
     def allocate_submodels_with_fixed_pruning(self):
         """
-        基于固定裁剪比例的子模型分配模块
-        按照神经元重要性正序排序，优先裁剪重要性较小的参数
+        基于固定裁剪比例的逐层子模型分配模块
+        在每一层内按照神经元重要性排序，优先裁剪重要性较小的参数
+        每层独立应用相同的裁剪比例
         """
-        if self.neuron_importance is None or len(self.neuron_importance) == 0:
-            # 如果没有神经元重要性信息，直接使用全局模型
+        if not hasattr(self, 'layer_neuron_importance') or len(self.layer_neuron_importance) == 0:
+            # 如果没有逐层神经元重要性信息，直接使用全局模型
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
-            logging.warning("没有神经元重要性信息，使用完整全局模型")
+            logging.warning("没有逐层神经元重要性信息，使用完整全局模型")
             return
         
-        # 获取按神经元重要性排序的神经元索引（从最小到最大，正序）
-        sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
-        total_neurons = len(sorted_neuron_indices)
-        
         for i, pruning_ratio in enumerate(self.fixed_pruning_ratios):
-            # 计算要裁剪的神经元数量
-            num_neurons_to_prune = int(total_neurons * pruning_ratio)
-            
-            # 选择要保留的神经元（裁剪重要性最小的神经元）
-            if num_neurons_to_prune >= total_neurons:
-                # 如果裁剪比例过大，至少保留一个重要性最大的神经元
-                neurons_to_keep = [sorted_neuron_indices[-1]]
-                logging.warning(f"客户端 {i} 裁剪比例({pruning_ratio:.1%})过大，只保留重要性最大的神经元")
-            else:
-                # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
-                neurons_to_keep = sorted_neuron_indices[num_neurons_to_prune:]
-            
-            logging.debug(f"客户端 {i}: 裁剪比例={pruning_ratio:.1%}, "
-                         f"裁剪 {num_neurons_to_prune} 个神经元, 保留 {len(neurons_to_keep)} 个神经元")
-            
-            # 构建子模型（通过掩码实现）
+            # 为每个客户端构建子模型
             submodel = copy.deepcopy(self.model)
-            self.apply_neuron_mask(submodel, torch.tensor(neurons_to_keep))
+            
+            # 逐层应用裁剪
+            total_neurons_pruned = 0
+            total_neurons = 0
+            
+            for layer_name in self.layer_neuron_importance.keys():
+                layer_importance = self.layer_neuron_importance[layer_name]
+                layer_percentiles = self.layer_neuron_percentiles[layer_name]
+                num_neurons = len(layer_importance)
+                
+                # 计算当前层要裁剪的神经元数量
+                num_neurons_to_prune = int(num_neurons * pruning_ratio)
+                
+                # 选择要保留的神经元（裁剪重要性最小的神经元）
+                if num_neurons_to_prune >= num_neurons:
+                    # 如果裁剪比例过大，至少保留一个重要性最大的神经元
+                    neurons_to_keep = [layer_percentiles[-1].item()]
+                    logging.warning(f"客户端 {i} 层 {layer_name} 裁剪比例({pruning_ratio:.1%})过大，只保留重要性最大的神经元")
+                else:
+                    # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
+                    neurons_to_keep = layer_percentiles[num_neurons_to_prune:].tolist()
+                
+                # 应用层级掩码
+                self.apply_layer_neuron_mask(submodel, layer_name, neurons_to_keep)
+                
+                total_neurons_pruned += num_neurons_to_prune
+                total_neurons += num_neurons
+                
+                logging.debug(f"客户端 {i} 层 {layer_name}: 裁剪比例={pruning_ratio:.1%}, "
+                             f"裁剪 {num_neurons_to_prune}/{num_neurons} 个神经元")
+            
             self.client_submodels[i] = submodel
+            
+            actual_pruning_ratio = total_neurons_pruned / total_neurons if total_neurons > 0 else 0
+            logging.info(f"客户端 {i}: 目标裁剪比例={pruning_ratio:.1%}, "
+                        f"实际裁剪比例={actual_pruning_ratio:.1%}, "
+                        f"总裁剪神经元={total_neurons_pruned}/{total_neurons}")
 
-    def apply_neuron_mask(self, model, keep_indices):
+    def apply_layer_neuron_mask(self, model, layer_name, keep_indices):
         """
-        对模型应用神经元掩码，只保留指定的神经元
-        """
-        neuron_idx = 0
-        keep_indices_set = set(keep_indices.tolist())
+        对指定层应用神经元掩码，只保留指定的神经元
         
+        Args:
+            model: 要应用掩码的模型
+            layer_name: 层名称
+            keep_indices: 要保留的神经元索引列表（层内索引）
+        """
+        keep_indices_set = set(keep_indices)
+        
+        # 找到对应的模块
+        target_module = None
         for name, module in model.named_modules():
-            if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
-                if isinstance(module, torch.nn.Linear):
-                    num_neurons = module.out_features
-                elif isinstance(module, torch.nn.Conv2d):
-                    num_neurons = module.out_channels
-                
-                # 为不在保留列表中的神经元设置权重为0
-                for local_idx in range(num_neurons):
-                    global_idx = neuron_idx + local_idx
-                    if global_idx not in keep_indices_set:
-                        if isinstance(module, torch.nn.Linear):
-                            module.weight.data[local_idx, :] = 0
-                            if module.bias is not None:
-                                module.bias.data[local_idx] = 0
-                        elif isinstance(module, torch.nn.Conv2d):
-                            module.weight.data[local_idx, :, :, :] = 0
-                            if module.bias is not None:
-                                module.bias.data[local_idx] = 0
-                
-                neuron_idx += num_neurons
+            if name == layer_name and isinstance(module, (torch.nn.Linear, torch.nn.Conv2d)):
+                target_module = module
+                break
+        
+        if target_module is None:
+            logging.error(f"未找到层 {layer_name}")
+            return
+        
+        # 获取层的神经元数量
+        if isinstance(target_module, torch.nn.Linear):
+            num_neurons = target_module.out_features
+        elif isinstance(target_module, torch.nn.Conv2d):
+            num_neurons = target_module.out_channels
+        
+        # 为不在保留列表中的神经元设置权重为0
+        for local_idx in range(num_neurons):
+            if local_idx not in keep_indices_set:
+                if isinstance(target_module, torch.nn.Linear):
+                    target_module.weight.data[local_idx, :] = 0
+                    if target_module.bias is not None:
+                        target_module.bias.data[local_idx] = 0
+                elif isinstance(target_module, torch.nn.Conv2d):
+                    target_module.weight.data[local_idx, :, :, :] = 0
+                    if target_module.bias is not None:
+                        target_module.bias.data[local_idx] = 0
 
     def dynamic_aggregation(self, client_trained_models, round_num=0):
         """
         动态聚合模块
         基于神经元被聚合频率的加权机制（与FedSAC一致）
+        支持逐层裁剪：每层的神经元独立计算频率和权重
         """
         # 计算当前轮次每个参数的聚合频率
         current_frequency = {}
@@ -243,6 +298,7 @@ class Server(BasicServer):
                 current_frequency[name] = torch.ones_like(param) * len(self.clients)
         else:
             # 后续轮次：使用上一轮分配的子模型来计算掩码
+            # 逐层裁剪的子模型中，每层的神经元掩码是独立计算的
             for i, allocated_submodel in enumerate(self.client_submodels):
                 if allocated_submodel is not None:
                     for name, param in allocated_submodel.named_parameters():
@@ -250,6 +306,7 @@ class Server(BasicServer):
                         current_frequency[name] += mask
         
         # 动态聚合：频率越高的参数权重越小
+        # 逐层裁剪确保每层内的神经元重要性排序是独立的
         aggregated_params = {}
         for name, param in self.model.named_parameters():
             weighted_sum = torch.zeros_like(param)
@@ -267,6 +324,7 @@ class Server(BasicServer):
                     
                     allocated_param = dict(self.client_submodels[i].named_parameters())[name]
                     # 只聚合被分配的神经元（非零的部分）
+                    # 逐层裁剪保证了每层的掩码是基于层内重要性计算的
                     allocation_mask = (allocated_param != 0).float()
                     # 使用频率的倒数作为权重
                     frequency = current_frequency[name] + 1e-8  # 避免除零
