@@ -142,16 +142,7 @@ class Server(BasicServer):
             rate = self.get_client_submodel_rate(idx)
             
             # 根据不同的模式生成子模型索引
-            if self.mode == 'awareGrad':
-                # 基于梯度的子模型生成
-                self.construct_gradient_aware_submodel(idx, rate)
-            elif self.mode == 'roll':
-                # 滚动选择通道
-                self.construct_roll_submodel(idx, rate)
-            elif self.mode == 'rand':
-                # 随机选择通道
-                self.construct_random_submodel(idx, rate)
-            elif self.mode == 'hetero':
+            if self.mode == 'hetero':
                 # 基于固定顺序选择通道
                 self.construct_hetero_submodel(idx, rate)
             elif self.mode == 'fedavg':
@@ -173,80 +164,6 @@ class Server(BasicServer):
             # 确保模型在正确的设备上
             model = model.to(fmodule.device)
         return model
-
-    def construct_gradient_aware_submodel(self, client_idx, rate):
-        """基于梯度的子模型生成"""
-        # 这里需要实现基于梯度的子模型生成逻辑
-        # 在实际实现中，需要获取客户端数据样本，计算梯度，然后基于梯度选择重要的通道
-        # 由于我们无法直接访问客户端数据，这里简化处理
-        
-        # 如果有上一轮的客户端信息，使用它来推断客户端的类别
-        if self.last_client_info[client_idx]:
-            # 使用上一轮的模型参数来推断客户端的类别
-            # 实际实现中，这里应该使用公共数据集来评估模型在各类别上的性能
-            pass
-        
-        # 简化实现：随机生成梯度
-        gradient = {}
-        for name, param in self.model.named_parameters():
-            if 'weight' in name and (param.dim() > 1):
-                gradient[name] = torch.rand_like(param)
-        
-        # 使用模型的get_idx_aware_grad方法基于梯度生成子模型索引
-        self.model.get_idx_aware_grad(rate, self.select_mode, gradient)
-        client_model_idx = copy.deepcopy(self.model.idx)
-        self.model.clear_idx()
-        
-        # 从全局模型中提取子模型参数
-        client_model_params = self.get_model_params(self.model, client_model_idx)
-        self.client_submodels[client_idx] = self.get_model(self.model_name, rate).to(fmodule.device)
-        # 加载参数到客户端子模型
-        self.client_submodels[client_idx].load_state_dict(client_model_params)
-        
-        # 保存子模型形状信息
-        self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
-    
-    def construct_roll_submodel(self, client_idx, rate):
-        """滚动选择通道的子模型生成"""
-        # 使用模型的get_idx_roll方法生成子模型索引
-        if not hasattr(self.model, 'roll'):
-            self.model.roll = 0
-            
-        self.model.get_idx_roll(rate)
-        client_model_idx = copy.deepcopy(self.model.idx)
-        self.model.roll += 1  # 更新滚动位置
-        self.model.clear_idx()
-        
-        # 从全局模型中提取子模型参数
-        client_model_params = self.get_model_params(self.model, client_model_idx)
-        
-        # 创建新的子模型实例
-        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
-        
-        # 加载参数到客户端子模型
-        self.client_submodels[client_idx].load_state_dict(client_model_params)
-        
-        # 保存子模型形状信息
-        self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
-    
-    def construct_random_submodel(self, client_idx, rate):
-        """随机选择通道的子模型生成"""
-        # 使用模型的get_idx_rand方法生成子模型索引
-        self.model.get_idx_rand(rate)
-        client_model_idx = copy.deepcopy(self.model.idx)
-        self.model.clear_idx()
-        
-        # 从全局模型中提取子模型参数
-        client_model_params = self.get_model_params(self.model, client_model_idx)
-        
-        # 创建新的子模型实例
-        self.client_submodels[client_idx] = self.get_model(self.model_name, rate)
-        
-        # 加载参数到客户端子模型
-        self.client_submodels[client_idx].load_state_dict(client_model_params)
-        
-        # 保存子模型形状信息
-        self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
     
     def construct_hetero_submodel(self, client_idx, rate):
         """基于固定顺序选择通道的子模型生成"""
