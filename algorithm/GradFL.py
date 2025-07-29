@@ -17,6 +17,8 @@ import random
 from benchmark.cifar10.model.gradfl_models.resnet import resnet18
 import matplotlib.pyplot as plt
 import matplotlib
+import os
+from benchmark.cifar10.model.gradfl_models.global_neuron_importance import create_global_importance_calculator
 matplotlib.use('Agg')  # 使用非交互式后端
 
 # 配置日志格式
@@ -232,7 +234,8 @@ class Server(BasicServer):
     def construct_neuron_submodel(self, client_idx, rate, data_loader, calculator):
         """基于神经元重要性的子模型生成"""
         # 使用模型的get_idx_neuron方法生成子模型索引
-        self.model.get_idx_neuron(rate, data_loader, calculator)
+        global_importance_cache = create_global_importance_calculator(self.model, calculator)
+        self.model.get_idx_neuron_from_global(rate, global_importance_cache)
         client_model_idx = copy.deepcopy(self.model.idx)
         self.model.clear_idx()
         
@@ -503,6 +506,7 @@ class Server(BasicServer):
             self.use_english_labels = True
         else:
             self.use_english_labels = False
+        self.use_english_labels = True
     
     def _get_color_palette(self, n_colors):
         """获取美观的颜色调色板"""

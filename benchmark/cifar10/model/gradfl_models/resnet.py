@@ -145,38 +145,40 @@ class BasicBlock(nn.Module):
         
         return third_channels
 
-    def get_idx_neuron(self, original_loss, first_channels, rate, param_name, data_loader, calculator, model=None):
+
+    def get_idx_neuron_from_global(self, first_channels, rate, param_name, global_importance_cache):
         """
-        基于神经元重要性评估选择索引（借鉴FedSAC方法）
+        基于预计算的全局神经元重要性选择索引（高效版本）
         Args:
             first_channels: 输入通道索引
             rate: 保留比例
             param_name: 参数名称前缀
-            data_loader: 验证数据加载器
-            calculator: 计算器对象
-            model: 完整模型（用于损失计算）
+            global_importance_cache: 全局神经元重要性缓存
         """
-        # 如果没有传入模型，使用self作为模型
-        if model is None:
-            model = self
-            
-        # 计算原始损失
         k = int(rate * self.out_channels)
         
-        # 评估conv1层神经元重要性
-        conv1_importance = evaluate_layer_neuron_importance(
-            model, self.conv1, data_loader, calculator, original_loss, self.out_channels
-        )
-        second_channels = select_topk_channels(conv1_importance, k, self.out_channels)
+        # 从全局缓存获取conv1层的重要神经元
+        conv1_cache_key = f"{param_name}.conv1"
+        if conv1_cache_key in global_importance_cache:
+            conv1_importance = global_importance_cache[conv1_cache_key]['importance_scores']
+            second_channels = select_topk_channels(conv1_importance, k, self.out_channels)
+        else:
+            # 如果缓存中没有，则随机选择
+            second_channels = torch.randperm(self.out_channels)[:k]
+            second_channels = torch.sort(second_channels)[0]
         
         self.idx[param_name + '.conv1.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
         self.idx[param_name + '.n1.weight'], self.idx[param_name + '.n1.bias'] = second_channels, second_channels
         
-        # 评估conv2层神经元重要性
-        conv2_importance = evaluate_layer_neuron_importance(
-            model, self.conv2, data_loader, calculator, original_loss, self.out_channels
-        )
-        third_channels = select_topk_channels(conv2_importance, k, self.out_channels)
+        # 从全局缓存获取conv2层的重要神经元
+        conv2_cache_key = f"{param_name}.conv2"
+        if conv2_cache_key in global_importance_cache:
+            conv2_importance = global_importance_cache[conv2_cache_key]['importance_scores']
+            third_channels = select_topk_channels(conv2_importance, k, self.out_channels)
+        else:
+            # 如果缓存中没有，则随机选择
+            third_channels = torch.randperm(self.out_channels)[:k]
+            third_channels = torch.sort(third_channels)[0]
         
         self.idx[param_name + '.conv2.weight'] = (third_channels, second_channels, torch.arange(3), torch.arange(3))
         self.idx[param_name + '.n2.weight'], self.idx[param_name + '.n2.bias'] = third_channels, third_channels
@@ -320,24 +322,24 @@ class Model(FModule):
         self.idx['linear.weight'] = (torch.arange(self.linear.weight.shape[0]), first_channels)
         self.idx['linear.bias'] = torch.arange(self.linear.weight.shape[0])
 
-    def get_idx_neuron(self, rate, data_loader, calculator):
+    def get_idx_neuron_from_global(self, rate, global_importance_cache):
         """
-        基于神经元重要性评估选择索引（借鉴FedSAC方法）
+        基于预计算的全局神经元重要性选择索引（高效版本）
         Args:
             rate: 保留比例
-            data_loader: 验证数据加载器
-            calculator: 计算器对象
+            global_importance_cache: 全局神经元重要性缓存
         """
-        # 计算原始损失
-        original_loss = calculate_average_loss(self, data_loader, calculator)
         start_channels = (torch.arange(3))
         
-        # 评估第一个卷积层神经元重要性
+        # 从全局缓存获取第一个卷积层的重要神经元
         k = int(rate * self.conv.weight.shape[0])
-        conv_importance = evaluate_layer_neuron_importance(
-            self, self.conv, data_loader, calculator, original_loss, self.conv.weight.shape[0]
-        )
-        first_channels = select_topk_channels(conv_importance, k, self.conv.weight.shape[0])
+        if 'conv' in global_importance_cache:
+            conv_importance = global_importance_cache['conv']['importance_scores']
+            first_channels = select_topk_channels(conv_importance, k, self.conv.weight.shape[0])
+        else:
+            # 如果缓存中没有，则随机选择
+            first_channels = torch.randperm(self.conv.weight.shape[0])[:k]
+            first_channels = torch.sort(first_channels)[0]
         
         self.idx['conv.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
         self.idx['n1.weight'], self.idx['n1.bias'] = first_channels, first_channels
@@ -349,7 +351,7 @@ class Model(FModule):
             param_name = 'layer' + s
             for i, blc in enumerate(eval(fun_name + s)):
                 param_sub_name = param_name + '.' + str(i)
-                first_channels = blc.get_idx_neuron(original_loss, first_channels, rate, param_sub_name, data_loader, calculator, self)
+                first_channels = blc.get_idx_neuron_from_global(first_channels, rate, param_sub_name, global_importance_cache)
                 self.idx.update(blc.idx)
         
         # 对于线性层，我们保留所有输出类别（因为这是分类层）

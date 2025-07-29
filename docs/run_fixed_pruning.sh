@@ -56,8 +56,9 @@ python main.py \
     --num_rounds 50 \
     --num_epochs 2 \
     --learning_rate 0.01 \
-    --batch_size 64 \
+    --batch_size 32 \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \
-    --neuron_eval_interval 1
+    --neuron_eval_interval 1 \
+    --mode neuron
