@@ -150,7 +150,7 @@ class Server(BasicServer):
                 self.construct_fedavg_submodel(idx)
             elif self.mode == 'awareWeight':
                 # 基于权重大小的子模型生成
-                self.construct_weight_aware_submodel(idx, rate)
+                self.construct_weight_submodel(idx, rate)
             else:
                 raise ValueError(f"不支持的子模型生成模式: {self.mode}")
     
@@ -203,69 +203,10 @@ class Server(BasicServer):
         # 保存子模型形状信息
         self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
     
-    def construct_weight_aware_submodel(self, client_idx, rate):
-        """基于权重大小的子模型生成 - 改进版本（按层裁剪）"""
-        # 改进的权重重要性计算，使用L2范数但按层进行裁剪
-        weights = {}
-        
-        # 按层计算神经元重要性并构建权重字典
-        for name, param in self.model.named_parameters():
-            if 'weight' in name and (param.dim() > 1):
-                # 找到对应的模块以获取偏置信息
-                module_name = name.replace('.weight', '')
-                module = dict(self.model.named_modules())[module_name]
-                
-                if isinstance(param, torch.Tensor):
-                    if param.dim() > 2:  # Conv层
-                        num_channels = param.size(0)
-                        channel_importance = []
-                        
-                        for i in range(num_channels):
-                            # 计算每个通道的L2范数（包含权重和偏置）
-                            channel_weights = param.data[i, :, :, :].clone()
-                            channel_l2_norm = torch.norm(channel_weights, p=2).item()
-                            
-                            # 如果有偏置，加入偏置的贡献
-                            if hasattr(module, 'bias') and module.bias is not None:
-                                bias_norm = abs(module.bias.data[i].item())
-                                channel_l2_norm = (channel_l2_norm**2 + bias_norm**2)**0.5
-                            
-                            # 归一化：除以参数数量
-                            param_count = (param.size(1) * param.size(2) * param.size(3) + 
-                                         (1 if hasattr(module, 'bias') and module.bias is not None else 0))
-                            avg_channel_l2_norm = channel_l2_norm / param_count
-                            channel_importance.append(avg_channel_l2_norm)
-                        
-                        # 转换为tensor
-                        channel_importance = torch.tensor(channel_importance)
-                        
-                    else:  # Linear层
-                        num_neurons = param.size(0)
-                        neuron_importance = []
-                        
-                        for i in range(num_neurons):
-                            # 计算每个神经元的L2范数（包含权重和偏置）
-                            neuron_weights = param.data[i, :].clone()
-                            neuron_l2_norm = torch.norm(neuron_weights, p=2).item()
-                            
-                            # 如果有偏置，加入偏置的贡献
-                            if hasattr(module, 'bias') and module.bias is not None:
-                                bias_norm = abs(module.bias.data[i].item())
-                                neuron_l2_norm = (neuron_l2_norm**2 + bias_norm**2)**0.5
-                            
-                            # 归一化：除以参数数量
-                            param_count = param.size(1) + (1 if hasattr(module, 'bias') and module.bias is not None else 0)
-                            avg_neuron_l2_norm = neuron_l2_norm / param_count
-                            neuron_importance.append(avg_neuron_l2_norm)
-                        
-                        # 转换为tensor
-                        channel_importance = torch.tensor(neuron_importance)
-                    
-                    # 将重要性作为权重存储（这样get_idx_aware_weight可以直接使用）
-                    weights[name] = channel_importance
-        
-        # 使用模型的get_idx_aware_weight方法基于改进的权重生成子模型索引
-        self.model.get_idx_aware_weight(rate, self.select_mode, weights)
+    def construct_weight_submodel(self, client_idx, rate):
+        """基于权重大小的子模型生成"""
+        # 使用模型的get_idx_weight方法生成子模型索引
+        self.model.get_idx_weight(rate, 'l2')
         client_model_idx = copy.deepcopy(self.model.idx)
         self.model.clear_idx()
         
@@ -280,7 +221,7 @@ class Server(BasicServer):
         
         # 保存子模型形状信息
         self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
-        
+    
     def get_model_params(self, global_model, client_model_idx):
         """从全局模型中提取子模型参数"""
         client_model_params = OrderedDict()

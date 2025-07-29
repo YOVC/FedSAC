@@ -93,6 +93,56 @@ class BasicBlock(nn.Module):
             self.idx[param_name + '.shortcut.2.weight'], self.idx[param_name + '.shortcut.2.bias'] = third_channels, third_channels
         return third_channels
 
+    def get_idx_weight(self, first_channels, rate, param_name, weight_mode='l2'):
+        """
+        基于权重大小选择神经元索引
+        Args:
+            first_channels: 输入通道索引
+            rate: 保留比例
+            param_name: 参数名称前缀
+            weight_mode: 权重选择模式 ('l2', 'l1', 'max')
+        """
+        # 基于conv1权重选择第二层通道
+        conv1_weight = self.conv1.weight.data  # shape: [out_channels, in_channels, 3, 3]
+        if weight_mode == 'l2':
+            # 计算每个输出通道的L2范数
+            weight_importance = torch.norm(conv1_weight, p=2, dim=(1, 2, 3))
+        elif weight_mode == 'l1':
+            # 计算每个输出通道的L1范数
+            weight_importance = torch.norm(conv1_weight, p=1, dim=(1, 2, 3))
+        elif weight_mode == 'max':
+            # 计算每个输出通道的最大绝对值
+            weight_importance = torch.max(torch.abs(conv1_weight).view(conv1_weight.size(0), -1), dim=1)[0]
+        else:
+            raise ValueError(f'Unsupported weight_mode: {weight_mode}')
+        
+        # 选择top-k重要的通道
+        k = int(rate * self.out_channels)
+        second_channels = torch.topk(weight_importance, k)[1]
+        
+        self.idx[param_name + '.conv1.weight'] = (second_channels, first_channels, torch.arange(3), torch.arange(3))
+        self.idx[param_name + '.n1.weight'], self.idx[param_name + '.n1.bias'] = second_channels, second_channels
+        
+        # 基于conv2权重选择第三层通道
+        conv2_weight = self.conv2.weight.data  # shape: [out_channels, in_channels, 3, 3]
+        if weight_mode == 'l2':
+            weight_importance = torch.norm(conv2_weight, p=2, dim=(1, 2, 3))
+        elif weight_mode == 'l1':
+            weight_importance = torch.norm(conv2_weight, p=1, dim=(1, 2, 3))
+        elif weight_mode == 'max':
+            weight_importance = torch.max(torch.abs(conv2_weight).view(conv2_weight.size(0), -1), dim=1)[0]
+        
+        third_channels = torch.topk(weight_importance, k)[1]
+        self.idx[param_name + '.conv2.weight'] = (third_channels, second_channels, torch.arange(3), torch.arange(3))
+        self.idx[param_name + '.n2.weight'], self.idx[param_name + '.n2.bias'] = third_channels, third_channels
+        
+        # 处理shortcut连接
+        if len(self.shortcut) != 0:
+            self.idx[param_name + '.shortcut.0.weight'] = (third_channels, first_channels, torch.arange(1), torch.arange(1))
+            self.idx[param_name + '.shortcut.2.weight'], self.idx[param_name + '.shortcut.2.bias'] = third_channels, third_channels
+        
+        return third_channels
+
     def clear_idx(self):
         self.idx.clear()
 
@@ -174,6 +224,56 @@ class Model(FModule):
         self.idx['linear.weight'] = (torch.arange(self.linear.weight.shape[0]), first_channels)
         self.idx['linear.bias'] = torch.arange(self.linear.weight.shape[0])
 
+    def get_idx_weight(self, rate, weight_mode='l2'):
+        """
+        基于权重大小选择神经元索引
+        Args:
+            rate: 保留比例
+            weight_mode: 权重选择模式 ('l2', 'l1', 'max')
+        """
+        start_channels = (torch.arange(3))
+        
+        # 基于第一个卷积层权重选择通道
+        conv_weight = self.conv.weight.data  # shape: [out_channels, in_channels, 3, 3]
+        if weight_mode == 'l2':
+            weight_importance = torch.norm(conv_weight, p=2, dim=(1, 2, 3))
+        elif weight_mode == 'l1':
+            weight_importance = torch.norm(conv_weight, p=1, dim=(1, 2, 3))
+        elif weight_mode == 'max':
+            weight_importance = torch.max(torch.abs(conv_weight).view(conv_weight.size(0), -1), dim=1)[0]
+        else:
+            raise ValueError(f'Unsupported weight_mode: {weight_mode}')
+        
+        k = int(rate * self.conv.weight.shape[0])
+        first_channels = torch.topk(weight_importance, k)[1]
+        
+        self.idx['conv.weight'] = (first_channels, start_channels, torch.arange(3), torch.arange(3))
+        self.idx['n1.weight'], self.idx['n1.bias'] = first_channels, first_channels
+        
+        # 处理各个layer
+        fun_name = 'self.layer'
+        seq_index = ['1', '2', '3', '4']
+        for s in seq_index:
+            param_name = 'layer' + s
+            for i, blc in enumerate(eval(fun_name + s)):
+                param_sub_name = param_name + '.' + str(i)
+                first_channels = blc.get_idx_weight(first_channels, rate, param_sub_name, weight_mode)
+                self.idx.update(blc.idx)
+        
+        # 处理最后的线性层
+        linear_weight = self.linear.weight.data  # shape: [num_classes, in_features]
+        if weight_mode == 'l2':
+            weight_importance = torch.norm(linear_weight, p=2, dim=0)
+        elif weight_mode == 'l1':
+            weight_importance = torch.norm(linear_weight, p=1, dim=0)
+        elif weight_mode == 'max':
+            weight_importance = torch.max(torch.abs(linear_weight), dim=0)[0]
+        
+        # 对于线性层，我们保留所有输出类别，但可以根据权重重要性选择输入特征
+        # 这里我们保持与first_channels一致
+        self.idx['linear.weight'] = (torch.arange(self.linear.weight.shape[0]), first_channels)
+        self.idx['linear.bias'] = torch.arange(self.linear.weight.shape[0])
+
     def clear_idx(self):
         self.idx.clear()
         for i, blc in enumerate(self.layer1):
@@ -199,6 +299,36 @@ def resnet18(hidden_size, num_blocks, num_classes, track=False, model_rate=1):
     model = Model(hidden_size, BasicBlock, num_blocks, num_classes, model_rate, track)
     model.apply(init_param)
     return model
+
+def get_topk_index_by_weight(weight_tensor, k, weight_mode='l2'):
+    """
+    基于权重大小选择top-k索引
+    Args:
+        weight_tensor: 权重张量
+        k: 选择的数量
+        weight_mode: 权重计算模式 ('l2', 'l1', 'max')
+    Returns:
+        top-k索引
+    """
+    if weight_mode == 'l2':
+        if weight_tensor.dim() > 2:  # conv层权重
+            importance = torch.norm(weight_tensor, p=2, dim=tuple(range(1, weight_tensor.dim())))
+        else:  # linear层权重
+            importance = torch.norm(weight_tensor, p=2, dim=1)
+    elif weight_mode == 'l1':
+        if weight_tensor.dim() > 2:
+            importance = torch.norm(weight_tensor, p=1, dim=tuple(range(1, weight_tensor.dim())))
+        else:
+            importance = torch.norm(weight_tensor, p=1, dim=1)
+    elif weight_mode == 'max':
+        if weight_tensor.dim() > 2:
+            importance = torch.max(torch.abs(weight_tensor).view(weight_tensor.size(0), -1), dim=1)[0]
+        else:
+            importance = torch.max(torch.abs(weight_tensor), dim=1)[0]
+    else:
+        raise ValueError(f'Unsupported weight_mode: {weight_mode}')
+    
+    return torch.topk(importance, k)[1]
 
 def get_topk_index(x, k, topmode):
     if topmode == 'absmax':
