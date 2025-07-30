@@ -84,11 +84,16 @@ class Server(BasicServer):
             logger.time_end('Time Cost')
             if logger.check_if_log(round, self.eval_interval): 
                 logger.log(self, round=round, corrs_agg=corrs_agg)
+            
+            # 每5轮绘制一次图片（从第5轮开始），以便更快看到训练效果
+            if round > 0 and round % 5 == 0:
+                logging.info(f"第 {round} 轮：绘制训练进度图表")
+                self.plot_training_progress()
 
         logging.info("==================== 训练完成 ====================")
         logger.time_end('Total Time Cost')
         
-        # 绘制训练过程图表
+        # 绘制最终的训练过程图表
         self.plot_training_progress()
         
         # save results as .json file
@@ -456,12 +461,13 @@ class Server(BasicServer):
         os.makedirs(save_dir, exist_ok=True)
         
         rounds = self.training_history['rounds']
+        current_round = rounds[-1] if rounds else 0
         
         # 第一张图：本地训练后的准确率统计
-        self._plot_local_training_statistics(rounds, save_dir)
+        self._plot_local_training_statistics(rounds, save_dir, current_round)
         
         # 第二张图：子模型分配后的准确率统计
-        self._plot_submodel_statistics(rounds, save_dir)
+        self._plot_submodel_statistics(rounds, save_dir, current_round)
         
     def _setup_plot_style(self):
         """设置绘图样式和字体"""
@@ -500,123 +506,90 @@ class Server(BasicServer):
             'figure.titlesize': 18
         })
     
-    def _plot_local_training_statistics(self, rounds, save_dir):
-        """绘制本地训练后的准确率统计图"""
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        client_accuracies = self.training_history['local_training']['client_accuracies']
-        global_accuracies = self.training_history['local_training']['global_accuracy']
-        
-        if not client_accuracies:
-            logging.warning("没有本地训练准确率数据")
+    def _plot_local_training_statistics(self, rounds, save_dir, current_round):
+        """绘制本地训练后的准确率统计（最大值、最小值、平均值）和聚合模型准确率"""
+        if not self.training_history['local_training']['client']:
+            logging.warning("没有本地训练数据可供绘制")
             return
         
-        # 计算每轮的最大值、最小值、平均值
-        max_accuracies = []
-        min_accuracies = []
-        avg_accuracies = []
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
-        for round_acc in client_accuracies:
-            max_accuracies.append(max(round_acc))
-            min_accuracies.append(min(round_acc))
-            avg_accuracies.append(sum(round_acc) / len(round_acc))
+        # 计算客户端准确率的统计信息
+        client_accuracies = self.training_history['local_training']['client']
+        max_accuracies = [max(round_acc) for round_acc in client_accuracies]
+        min_accuracies = [min(round_acc) for round_acc in client_accuracies]
+        avg_accuracies = self.training_history['local_training']['average']
+        global_accuracies = self.training_history['local_training']['global']
         
-        # 绘制最大值、最小值、平均值
-        ax.plot(rounds, max_accuracies, label='客户端最大准确率', 
-               color='#E74C3C', marker='o', linewidth=2.5, markersize=6)
-        ax.plot(rounds, min_accuracies, label='客户端最小准确率', 
-               color='#3498DB', marker='s', linewidth=2.5, markersize=6)
-        ax.plot(rounds, avg_accuracies, label='客户端平均准确率', 
-               color='#F39C12', marker='^', linewidth=2.5, markersize=6)
+        # 绘制线条
+        ax.plot(rounds, max_accuracies, 'o-', color='#FF6B6B', linewidth=2.5, 
+                markersize=6, label='客户端最大准确率', alpha=0.8)
+        ax.plot(rounds, min_accuracies, 'o-', color='#4ECDC4', linewidth=2.5, 
+                markersize=6, label='客户端最小准确率', alpha=0.8)
+        ax.plot(rounds, avg_accuracies, 'o-', color='#45B7D1', linewidth=2.5, 
+                markersize=6, label='客户端平均准确率', alpha=0.8)
+        ax.plot(rounds, global_accuracies, 's-', color='#96CEB4', linewidth=3, 
+                markersize=7, label='聚合模型准确率', alpha=0.9)
         
-        # 绘制聚合模型准确率
-        if global_accuracies:
-            ax.plot(rounds, global_accuracies, label='聚合模型准确率', 
-                   color='#27AE60', marker='D', linewidth=3, markersize=7)
-        
-        # 设置图表
+        # 设置图表样式
         ax.set_xlabel('训练轮次', fontsize=14, fontweight='bold')
         ax.set_ylabel('准确率', fontsize=14, fontweight='bold')
         ax.set_title('本地训练后准确率统计', fontsize=16, fontweight='bold', pad=20)
-        
-        # 设置图例
-        ax.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=12)
-        
-        # 设置网格和坐标轴
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=1)
-        ax.set_axisbelow(True)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
-        plt.tight_layout()
+        ax.legend(fontsize=12, loc='best', frameon=True, fancybox=True, shadow=True)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.set_ylim(0, 1)
         
         # 保存图片
-        plot1_path = os.path.join(save_dir, 'local_training_statistics.png')
-        plt.savefig(plot1_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        filename = f'local_training_statistics_round_{current_round}.png'
+        filepath = os.path.join(save_dir, filename)
+        plt.tight_layout()
+        plt.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
-        logging.info(f"本地训练准确率统计图已保存至: {plot1_path}")
+        logging.info(f"本地训练统计图已保存至: {filepath}")
     
-    def _plot_submodel_statistics(self, rounds, save_dir):
-        """绘制子模型分配后的准确率统计图"""
-        fig, ax = plt.subplots(figsize=(12, 8))
-        
-        submodel_accuracies = self.training_history['submodel_assignment']['client_accuracies']
-        
-        if not submodel_accuracies:
-            logging.warning("没有子模型准确率数据")
+    def _plot_submodel_statistics(self, rounds, save_dir, current_round):
+        """绘制子模型分配后的准确率统计（最大值、最小值、平均值）和聚合模型准确率"""
+        if not self.training_history['submodel_assignment']['client']:
+            logging.warning("没有子模型分配数据可供绘制")
             return
         
-        # 子模型数据从第二轮开始，所以轮次也要对应调整
-        submodel_rounds = rounds[1:] if len(rounds) > len(submodel_accuracies) else rounds[:len(submodel_accuracies)]
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
-        # 计算每轮的最大值、最小值、平均值
-        max_accuracies = []
-        min_accuracies = []
-        avg_accuracies = []
+        # 计算子模型准确率的统计信息
+        client_accuracies = self.training_history['submodel_assignment']['client']
+        max_accuracies = [max(round_acc) for round_acc in client_accuracies]
+        min_accuracies = [min(round_acc) for round_acc in client_accuracies]
+        avg_accuracies = self.training_history['submodel_assignment']['average']
+        global_accuracies = self.training_history['submodel_assignment']['global']
         
-        for round_acc in submodel_accuracies:
-            max_accuracies.append(max(round_acc))
-            min_accuracies.append(min(round_acc))
-            avg_accuracies.append(sum(round_acc) / len(round_acc))
+        # 子模型数据可能从第二轮开始，需要调整轮次
+        submodel_rounds = rounds[-len(client_accuracies):] if len(rounds) > len(client_accuracies) else rounds
         
-        # 绘制最大值、最小值、平均值
-        ax.plot(submodel_rounds, max_accuracies, label='子模型最大准确率', 
-               color='#E74C3C', marker='o', linewidth=2.5, markersize=6)
-        ax.plot(submodel_rounds, min_accuracies, label='子模型最小准确率', 
-               color='#3498DB', marker='s', linewidth=2.5, markersize=6)
-        ax.plot(submodel_rounds, avg_accuracies, label='子模型平均准确率', 
-               color='#F39C12', marker='^', linewidth=2.5, markersize=6)
+        # 绘制线条
+        ax.plot(submodel_rounds, max_accuracies, 'o-', color='#FF9F43', linewidth=2.5, 
+                markersize=6, label='子模型最大准确率', alpha=0.8)
+        ax.plot(submodel_rounds, min_accuracies, 'o-', color='#10AC84', linewidth=2.5, 
+                markersize=6, label='子模型最小准确率', alpha=0.8)
+        ax.plot(submodel_rounds, avg_accuracies, 'o-', color='#5F27CD', linewidth=2.5, 
+                markersize=6, label='子模型平均准确率', alpha=0.8)
+        ax.plot(submodel_rounds, global_accuracies, 's-', color='#00D2D3', linewidth=3, 
+                markersize=7, label='聚合模型准确率', alpha=0.9)
         
-        # 如果有聚合模型数据，也绘制出来（通常子模型阶段不会有新的聚合模型）
-        global_accuracies = self.training_history['local_training']['global_accuracy']
-        if global_accuracies and len(global_accuracies) > len(submodel_rounds):
-            # 取对应轮次的聚合模型准确率
-            corresponding_global = [global_accuracies[i] for i in range(1, len(global_accuracies)) if i-1 < len(submodel_rounds)]
-            if len(corresponding_global) == len(submodel_rounds):
-                ax.plot(submodel_rounds, corresponding_global, label='聚合模型准确率', 
-                       color='#27AE60', marker='D', linewidth=3, markersize=7)
-        
-        # 设置图表
+        # 设置图表样式
         ax.set_xlabel('训练轮次', fontsize=14, fontweight='bold')
         ax.set_ylabel('准确率', fontsize=14, fontweight='bold')
         ax.set_title('子模型分配后准确率统计', fontsize=16, fontweight='bold', pad=20)
-        
-        # 设置图例
-        ax.legend(loc='best', frameon=True, fancybox=True, shadow=True, fontsize=12)
-        
-        # 设置网格和坐标轴
-        ax.grid(True, alpha=0.3, linestyle='--', linewidth=1)
-        ax.set_axisbelow(True)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
-        plt.tight_layout()
+        ax.legend(fontsize=12, loc='best', frameon=True, fancybox=True, shadow=True)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.set_ylim(0, 1)
         
         # 保存图片
-        plot2_path = os.path.join(save_dir, 'submodel_statistics.png')
-        plt.savefig(plot2_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        filename = f'submodel_statistics_round_{current_round}.png'
+        filepath = os.path.join(save_dir, filename)
+        plt.tight_layout()
+        plt.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
-        logging.info(f"子模型准确率统计图已保存至: {plot2_path}")
+        logging.info(f"子模型统计图已保存至: {filepath}")
     
 class Client(BasicClient):
     def __init__(self, option, name='', train_data=None, valid_data=None):
