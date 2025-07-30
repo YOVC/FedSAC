@@ -18,6 +18,7 @@ from benchmark.cifar10.model.gradfl_models.resnet import resnet18
 import matplotlib.pyplot as plt
 import matplotlib
 import os
+import csv
 from benchmark.cifar10.model.gradfl_models.global_neuron_importance import create_global_importance_calculator
 matplotlib.use('Agg')  # 使用非交互式后端
 
@@ -68,6 +69,12 @@ class Server(BasicServer):
             }
         }
         
+        # CSV数据保存相关
+        self.csv_save_dir = os.path.join('fedtask', option.get('task', 'default_task'), 'csv_results')
+        os.makedirs(self.csv_save_dir, exist_ok=True)
+        self.csv_file_path = os.path.join(self.csv_save_dir, '{}.csv'.format(self.mode))
+        self._initialize_csv_file()
+        
     def run(self):
         """
         Start the federated learning system where the global model is trained iteratively.
@@ -99,6 +106,36 @@ class Server(BasicServer):
         # save results as .json file
         logger.save(os.path.join('fedtask', self.option['task'], 'record', flw.output_filename(self.option, self)))
         return
+
+    def _initialize_csv_file(self):
+        """初始化CSV文件，写入表头"""
+        try:
+            with open(self.csv_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # 写入表头
+                writer.writerow([
+                    'round', 
+                    'client_max_accuracy', 
+                    'client_avg_accuracy', 
+                    'global_accuracy'
+                ])
+            logging.info(f"CSV文件已初始化: {self.csv_file_path}")
+        except Exception as e:
+            logging.error(f"初始化CSV文件失败: {e}")
+
+    def _save_round_data_to_csv(self, round_num, client_max_acc, client_avg_acc, global_acc):
+        """保存单轮数据到CSV文件"""
+        try:
+            with open(self.csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow([
+                    round_num,
+                    f"{client_max_acc:.6f}",
+                    f"{client_avg_acc:.6f}",
+                    f"{global_acc:.6f}"
+                ])
+        except Exception as e:
+            logging.error(f"保存第{round_num}轮数据到CSV失败: {e}")
 
     def iterate(self, t):
         """
@@ -438,6 +475,12 @@ class Server(BasicServer):
             # 记录轮次
             if round_num not in self.training_history['rounds']:
                 self.training_history['rounds'].append(round_num)
+            
+            # 保存数据到CSV文件
+            if results['local_models']['eval_metrics']:
+                client_max_acc = max(results['local_models']['eval_metrics'])
+                client_avg_acc = sum(results['local_models']['eval_metrics']) / len(results['local_models']['eval_metrics'])
+                self._save_round_data_to_csv(round_num, client_max_acc, client_avg_acc, eval_metric)
         else:
             # 记录子模型分配后的数据
             if results['local_models']['eval_metrics']:
