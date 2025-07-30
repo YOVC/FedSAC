@@ -33,7 +33,7 @@ class Server(BasicServer):
         self.mode = option.get('mode', 'awareGrad')  # 子模型生成策略：awareGrad, roll, rand, hetero, fedavg
         self.select_mode = option.get('select_mode', 'absmax')  # 选择模式：absmax, probs, absmin
         self.model_name = option.get('model', 'resnet18')
-        self.fixed_keep_ratios = [0.8, 0.5, 0.9, 0.7, 0.6, 0.75, 0.4, 0.55, 1.0, 0.45]
+        self.fixed_keep_ratios = [0.8, 0.4, 1.0, 0.7, 0.5, 0.75, 0.55, 0.6, 0.9, 0.45]
         
         # 为每个客户端维护子模型和子模型形状
         self.client_submodels = [copy.deepcopy(model) for _ in range(self.num_clients)]
