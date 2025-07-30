@@ -44,6 +44,15 @@ class Server(BasicServer):
         # 数据集类别列表（用于梯度感知模式）
         self.class_list = None
         
+        # 全局神经元重要性计算器
+        self.global_importance_calculator = None
+        self.global_importance_cache = None
+        if self.mode == 'neuron' and validation is not None:
+            self.global_importance_calculator = create_global_importance_calculator(
+                model, self.calculator, cache_dir="./neuron_importance_cache"
+            )
+            logging.info("已初始化全局神经元重要性计算器")
+        
         # 用于绘图的数据存储
         self.training_history = {
             'rounds': [],
@@ -113,6 +122,18 @@ class Server(BasicServer):
 
         # 6. 为下一轮构建客户端子模型（第一轮之后）
         if t < self.num_rounds:  # 确保不在最后一轮构建子模型
+            # 6.1 如果使用神经元重要性模式，先计算全局神经元重要性
+            if self.mode == 'neuron' and self.global_importance_calculator is not None:
+                logging.info(f"开始计算全局神经元重要性")
+                data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
+                self.global_importance_cache = self.global_importance_calculator.compute_global_neuron_importance(
+                    data_loader, force_recompute=(t % 5 == 0)
+                )
+                logging.info(f"全局神经元重要性计算完成")
+                # 打印重要性统计摘要
+                summary = self.global_importance_calculator.get_importance_summary()
+                logging.info(f"神经元重要性统计:\n{summary}")
+            
             logging.info(f"开始构建客户端子模型")
             self.construct_client_submodels(self.selected_clients)
             
@@ -155,11 +176,9 @@ class Server(BasicServer):
                 self.construct_weight_submodel(idx, rate)
             elif self.mode == 'neuron':
                 # 基于神经元重要性的子模型生成
-                if self.validation is None:
-                    logging.warning("没有验证数据，跳过神经元重要性评估")
-                    return
-                data_loader = self.calculator.get_data_loader(self.validation, batch_size=64)
-                self.construct_neuron_submodel(idx, rate, data_loader, self.calculator)
+                if self.global_importance_cache is None:
+                    logging.warning(f"全局神经元重要性缓存为空，客户端 {idx} 将使用随机选择")
+                self.construct_neuron_submodel(idx, rate)
             else:
                 raise ValueError(f"不支持的子模型生成模式: {self.mode}")
     
@@ -231,11 +250,10 @@ class Server(BasicServer):
         # 保存子模型形状信息
         self.clients_models_shape[client_idx] = copy.deepcopy(client_model_idx)
     
-    def construct_neuron_submodel(self, client_idx, rate, data_loader, calculator):
+    def construct_neuron_submodel(self, client_idx, rate):
         """基于神经元重要性的子模型生成"""
-        # 使用模型的get_idx_neuron方法生成子模型索引
-        global_importance_cache = create_global_importance_calculator(self.model, calculator)
-        self.model.get_idx_neuron_from_global(rate, global_importance_cache)
+        # 使用模型的get_idx_neuron_from_global方法生成子模型索引
+        self.model.get_idx_neuron_from_global(rate, self.global_importance_cache or {})
         client_model_idx = copy.deepcopy(self.model.idx)
         self.model.clear_idx()
         
