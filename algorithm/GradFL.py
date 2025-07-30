@@ -528,7 +528,7 @@ class Server(BasicServer):
                 markersize=6, label='client_min', alpha=0.8)
         ax.plot(rounds, avg_accuracies, 'o-', color='#45B7D1', linewidth=2.5, 
                 markersize=6, label='client_avg', alpha=0.8)
-        ax.plot(rounds, global_accuracies, 's-', color='#FF6B6B', linewidth=3, 
+        ax.plot(rounds, global_accuracies, 's-', color='#FFD700', linewidth=3, 
                 markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
@@ -575,7 +575,7 @@ class Server(BasicServer):
         
         # 如果有子模型的全局准确率数据，也绘制出来
         if global_accuracies and len(global_accuracies) == len(submodel_rounds):
-            ax.plot(submodel_rounds, global_accuracies, 's-', color='#FF6B6B', linewidth=3, 
+            ax.plot(submodel_rounds, global_accuracies, 's-', color='#FFD700', linewidth=3, 
                     markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
