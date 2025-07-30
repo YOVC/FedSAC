@@ -508,18 +508,18 @@ class Server(BasicServer):
     
     def _plot_local_training_statistics(self, rounds, save_dir, current_round):
         """绘制本地训练后的准确率统计（最大值、最小值、平均值）和聚合模型准确率"""
-        if not self.training_history['local_training']['client']:
+        if not self.training_history['local_training']['client_accuracies']:
             logging.warning("没有本地训练数据可供绘制")
             return
         
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
         # 计算客户端准确率的统计信息
-        client_accuracies = self.training_history['local_training']['client']
+        client_accuracies = self.training_history['local_training']['client_accuracies']
         max_accuracies = [max(round_acc) for round_acc in client_accuracies]
         min_accuracies = [min(round_acc) for round_acc in client_accuracies]
-        avg_accuracies = self.training_history['local_training']['average']
-        global_accuracies = self.training_history['local_training']['global']
+        avg_accuracies = self.training_history['local_training']['avg_accuracy']
+        global_accuracies = self.training_history['local_training']['global_accuracy']
         
         # 绘制线条
         ax.plot(rounds, max_accuracies, 'o-', color='#FF6B6B', linewidth=2.5, 
@@ -549,18 +549,18 @@ class Server(BasicServer):
     
     def _plot_submodel_statistics(self, rounds, save_dir, current_round):
         """绘制子模型分配后的准确率统计（最大值、最小值、平均值）和聚合模型准确率"""
-        if not self.training_history['submodel_assignment']['client']:
+        if not self.training_history['submodel_assignment']['client_accuracies']:
             logging.warning("没有子模型分配数据可供绘制")
             return
         
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
         # 计算子模型准确率的统计信息
-        client_accuracies = self.training_history['submodel_assignment']['client']
+        client_accuracies = self.training_history['submodel_assignment']['client_accuracies']
         max_accuracies = [max(round_acc) for round_acc in client_accuracies]
         min_accuracies = [min(round_acc) for round_acc in client_accuracies]
-        avg_accuracies = self.training_history['submodel_assignment']['average']
-        global_accuracies = self.training_history['submodel_assignment']['global']
+        avg_accuracies = self.training_history['submodel_assignment']['avg_accuracy']
+        global_accuracies = self.training_history['submodel_assignment']['global_accuracy']
         
         # 子模型数据可能从第二轮开始，需要调整轮次
         submodel_rounds = rounds[-len(client_accuracies):] if len(rounds) > len(client_accuracies) else rounds
@@ -572,8 +572,11 @@ class Server(BasicServer):
                 markersize=6, label='子模型最小准确率', alpha=0.8)
         ax.plot(submodel_rounds, avg_accuracies, 'o-', color='#5F27CD', linewidth=2.5, 
                 markersize=6, label='子模型平均准确率', alpha=0.8)
-        ax.plot(submodel_rounds, global_accuracies, 's-', color='#00D2D3', linewidth=3, 
-                markersize=7, label='聚合模型准确率', alpha=0.9)
+        
+        # 如果有子模型的全局准确率数据，也绘制出来
+        if global_accuracies and len(global_accuracies) == len(submodel_rounds):
+            ax.plot(submodel_rounds, global_accuracies, 's-', color='#00D2D3', linewidth=3, 
+                    markersize=7, label='聚合模型准确率', alpha=0.9)
         
         # 设置图表样式
         ax.set_xlabel('训练轮次', fontsize=14, fontweight='bold')
