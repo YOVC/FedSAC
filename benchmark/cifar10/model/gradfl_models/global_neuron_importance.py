@@ -53,8 +53,9 @@ class GlobalNeuronImportanceCalculator:
             dict: 每层的神经元重要性分数
         """
         # 检查缓存
-        data_hash = self._calculate_data_loader_hash(data_loader)
-        cache_key = self._get_cache_key(self.model.state_dict(), data_hash)
+        # data_hash = self._calculate_data_loader_hash(data_loader)
+        # cache_key = self._get_cache_key(self.model.state_dict(), data_hash)
+        cache_key = "importance"
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         
         if not force_recompute and os.path.exists(cache_file):
@@ -98,6 +99,9 @@ class GlobalNeuronImportanceCalculator:
         
         # 缓存结果
         self.neuron_importance_cache = importance_results
+        # 如果cache_file存在，先删除
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
         with open(cache_file, 'wb') as f:
             pickle.dump(importance_results, f)
         

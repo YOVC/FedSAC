@@ -9,9 +9,9 @@ python main.py \
     --task cifar10_cnum10_dist2_skew1.0_seed0 \
     --algorithm standalone \
     --model resnet18 \
-    --num_epochs 30 \
+    --num_epochs 50 \
     --learning_rate 0.01 \
-    --batch_size 64 \
+    --batch_size 32 \
     --eval_interval 1 \
     --seed 0 \
     --gpu 0 \

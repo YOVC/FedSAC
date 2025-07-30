@@ -27,6 +27,12 @@ class Server(BasicServer):
         # 客户端声誉和贡献度
         self.client_reputations = [0.0 for _ in range(len(self.clients))]
         self.client_contributions = [0.3204, 0.2446, 0.3209, 0.273, 0.2628, 0.2961, 0.2412, 0.2575, 0.3283, 0.2396]
+
+        self.fixed_pruning_ratios = [0.8, 0.5, 0.9, 0.7, 0.6, 0.75, 0.4, 0.55, 1.0, 0.45]
+
+        
+        logging.info(f"客户端贡献度: {[f'{c:.4f}' for c in self.client_contributions]}")
+        logging.info(f"客户端裁剪比例设置: {[f'{r:.1%}' for r in self.fixed_pruning_ratios]}")
         
         # 神经元重要性分数
         self.neuron_importance = None
@@ -38,10 +44,7 @@ class Server(BasicServer):
         # 神经元聚合频率统计
         self.neuron_aggregation_frequency = None
         
-        # 归一化贡献度（选择性操作）
-        # self.compute_client_contributions()
-
-        # 更新客户端声誉（贡献度在初始化时已计算，保持不变）
+        # 更新客户端声誉（基于贡献度）
         self.update_client_reputations()
         
     def run(self):
@@ -68,7 +71,7 @@ class Server(BasicServer):
 
     def iterate(self, t):
         """
-        FedSAC核心迭代过程
+        FedSAC核心迭代过程（固定裁剪版本）
         """
         self.selected_clients = [i for i in range(self.num_clients)]
         logging.info(f"开始客户端本地训练")
@@ -89,8 +92,8 @@ class Server(BasicServer):
             self.evaluate_neuron_importance()
             
         logging.info(f"开始子模型分配")
-        # 4. 子模型分配模块：为每个客户端构建子模型（基于更新后的神经元重要性）
-        self.allocate_submodels()
+        # 4. 子模型分配模块：基于固定裁剪比例构建子模型
+        self.allocate_submodels_with_fixed_pruning()
 
         # 5. 测试子模型精度
         logging.info(f"开始测试子模型精度")
@@ -117,6 +120,7 @@ class Server(BasicServer):
             total_loss += loss * len(batch_data[1])
             total_samples += len(batch_data[1])
         original_loss = total_loss / total_samples
+        
         # 计算每个神经元的重要性
         neuron_importance = []
         neuron_count = 0
@@ -158,7 +162,7 @@ class Server(BasicServer):
                     
                     # 计算重要性分数
                     importance = modified_loss - original_loss
-                    # TODO 使用ReLU函数确保重要性为非负值
+                    # 使用ReLU函数确保重要性为非负值
                     importance = max(importance, 0)
                     layer_importance.append(importance)
                     
@@ -183,18 +187,11 @@ class Server(BasicServer):
                 logging.warning("所有神经元重要性评估为零，使用默认小值代替")
             self.neuron_importance = self.neuron_importance / self.neuron_importance.sum() * 100
             # 计算重要性百分位数，用于子模型构建
+            # 注意：这里使用正序排序（从小到大），优先裁剪重要性较小的神经元
             self.neuron_importance_percentiles = torch.argsort(self.neuron_importance)
             
             logging.info(f"[FedSAC] 神经元重要性评估完成 - 总神经元数: {neuron_count}, "
                         f"重要性范围: [{self.neuron_importance.min().item():.6f}, {self.neuron_importance.max().item():.6f}]")
-
-    def compute_client_contributions(self):
-        # 归一化贡献度
-        if sum(self.client_contributions) > 0:
-            self.client_contributions = [c / sum(self.client_contributions) for c in self.client_contributions]
-        else:
-            self.client_contributions = [1.0 / len(self.clients) for _ in self.clients]
-        print("Client contributions :", self.client_contributions)
 
     def update_client_reputations(self):
         """
@@ -209,36 +206,38 @@ class Server(BasicServer):
         else:
             self.client_reputations = [100.0 / len(self.clients) for _ in self.clients]
 
-    def allocate_submodels(self):
+    def allocate_submodels_with_fixed_pruning(self):
         """
-        子模型分配模块
-        根据客户端声誉分配不同性能的子模型
-        实现公式：θ_i = quantity(r_i, ∑_{n_i ∈ S} I_{n_i})
-        其中，quantity表示当r_i = ∑_{n_i ∈ S} I_{n_i}时的子模型θ_i
-        S代表模型中所有神经元的位置，按照从最不重要到最重要的顺序排列
+        基于固定裁剪比例的子模型分配模块
+        按照神经元重要性正序排序，优先裁剪重要性较小的神经元
         """
         if self.neuron_importance is None or len(self.neuron_importance) == 0:
             # 如果没有神经元重要性信息，直接使用全局模型
             for i in range(len(self.clients)):
                 self.client_submodels[i] = copy.deepcopy(self.model)
+            logging.warning("没有神经元重要性信息，使用完整全局模型")
             return
-        # 获取按重要性排序的神经元索引（从最不重要到最重要）
+        
+        # 获取按神经元重要性排序的神经元索引（从最小到最大，正序）
         sorted_neuron_indices = self.neuron_importance_percentiles.tolist()
-        for i, reputation in enumerate(self.client_reputations):
-            # 根据声誉值r_i确定要保留的神经元
-            # 从最重要的神经元开始选择，直到累积重要性达到声誉值
-            cumulative_importance = 0.0
-            neurons_to_keep = []
-            # 从最不重要的神经元开始（倒序遍历）
-            for idx in sorted_neuron_indices:
-                neurons_to_keep.append(idx)
-                cumulative_importance += self.neuron_importance[idx].item()
-                # 当累积重要性达到或超过声誉值时停止
-                if cumulative_importance >= reputation:
-                    break
-            # 确保至少保留一个神经元
-            if not neurons_to_keep:
-                neurons_to_keep = [sorted_neuron_indices[-1]]  # 保留最重要的神经元
+        total_neurons = len(sorted_neuron_indices)
+        
+        for i, pruning_ratio in enumerate(self.fixed_pruning_ratios):
+            # 计算要裁剪的神经元数量
+            num_neurons_to_prune = int(total_neurons * pruning_ratio)
+            
+            # 选择要保留的神经元（裁剪重要性最小的神经元）
+            if num_neurons_to_prune >= total_neurons:
+                # 如果裁剪比例过大，至少保留一个重要性最大的神经元
+                neurons_to_keep = [sorted_neuron_indices[-1]]
+                logging.warning(f"客户端 {i} 裁剪比例({pruning_ratio:.1%})过大，只保留重要性最大的神经元")
+            else:
+                # 保留重要性较大的神经元（从索引num_neurons_to_prune开始到末尾）
+                neurons_to_keep = sorted_neuron_indices[num_neurons_to_prune:]
+            
+            logging.debug(f"客户端 {i}: 裁剪比例={pruning_ratio:.1%}, "
+                         f"裁剪 {num_neurons_to_prune} 个神经元, 保留 {len(neurons_to_keep)} 个神经元")
+            
             # 构建子模型（通过掩码实现）
             submodel = copy.deepcopy(self.model)
             self.apply_neuron_mask(submodel, torch.tensor(neurons_to_keep))
@@ -279,6 +278,7 @@ class Server(BasicServer):
         current_frequency = {}
         for name, param in self.model.named_parameters():
             current_frequency[name] = torch.zeros_like(param)
+        
         # 第一轮特殊处理：所有神经元的分配频次都为客户端数量
         if round_num == 0:
             # 第一轮时，所有神经元都被所有客户端使用
@@ -328,31 +328,6 @@ class Server(BasicServer):
         # 更新全局模型
         for name, param in self.model.named_parameters():
             param.data = aggregated_params[name]
-
-        # # 聚合BatchNorm层的统计信息（running_mean和running_var）
-        # aggregated_buffers = {}
-        # for name, buffer in self.model.named_buffers():
-        #     if 'running_mean' in name or 'running_var' in name:
-        #         weighted_sum = torch.zeros_like(buffer)
-                
-        #         # 对于BatchNorm统计信息，始终使用简单平均聚合
-        #         for i, trained_model in enumerate(client_trained_models):
-        #             trained_buffer = dict(trained_model.named_buffers())[name]
-        #             weighted_sum += trained_buffer
-                
-        #         aggregated_buffers[name] = weighted_sum / len(client_trained_models)
-        #     elif 'num_batches_tracked' in name:
-        #         # 对于num_batches_tracked，取最大值
-        #         max_batches = torch.zeros_like(buffer)
-        #         for i, trained_model in enumerate(client_trained_models):
-        #             trained_buffer = dict(trained_model.named_buffers())[name]
-        #             max_batches = torch.max(max_batches, trained_buffer)
-        #         aggregated_buffers[name] = max_batches
-        
-        # # 更新全局模型的缓冲区
-        # for name, buffer in self.model.named_buffers():
-        #     if name in aggregated_buffers:
-        #         buffer.data = aggregated_buffers[name]
         
     def pack(self, client_id):
         """
