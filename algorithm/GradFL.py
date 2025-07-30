@@ -523,18 +523,18 @@ class Server(BasicServer):
         
         # 绘制线条
         ax.plot(rounds, max_accuracies, 'o-', color='#FF6B6B', linewidth=2.5, 
-                markersize=6, label='客户端最大准确率', alpha=0.8)
+                markersize=6, label='client_max', alpha=0.8)
         ax.plot(rounds, min_accuracies, 'o-', color='#4ECDC4', linewidth=2.5, 
-                markersize=6, label='客户端最小准确率', alpha=0.8)
+                markersize=6, label='client_min', alpha=0.8)
         ax.plot(rounds, avg_accuracies, 'o-', color='#45B7D1', linewidth=2.5, 
-                markersize=6, label='客户端平均准确率', alpha=0.8)
+                markersize=6, label='client_avg', alpha=0.8)
         ax.plot(rounds, global_accuracies, 's-', color='#96CEB4', linewidth=3, 
-                markersize=7, label='聚合模型准确率', alpha=0.9)
+                markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
-        ax.set_xlabel('训练轮次', fontsize=14, fontweight='bold')
-        ax.set_ylabel('准确率', fontsize=14, fontweight='bold')
-        ax.set_title('本地训练后准确率统计', fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('round', fontsize=14, fontweight='bold')
+        ax.set_ylabel('accuracy', fontsize=14, fontweight='bold')
+        ax.set_title('local_training', fontsize=16, fontweight='bold', pad=20)
         ax.legend(fontsize=12, loc='best', frameon=True, fancybox=True, shadow=True)
         ax.grid(True, alpha=0.3, linestyle='--')
         ax.set_ylim(0, 1)
@@ -567,21 +567,21 @@ class Server(BasicServer):
         
         # 绘制线条
         ax.plot(submodel_rounds, max_accuracies, 'o-', color='#FF9F43', linewidth=2.5, 
-                markersize=6, label='子模型最大准确率', alpha=0.8)
+                markersize=6, label='submodel_max', alpha=0.8)
         ax.plot(submodel_rounds, min_accuracies, 'o-', color='#10AC84', linewidth=2.5, 
-                markersize=6, label='子模型最小准确率', alpha=0.8)
+                markersize=6, label='submodel_min', alpha=0.8)
         ax.plot(submodel_rounds, avg_accuracies, 'o-', color='#5F27CD', linewidth=2.5, 
-                markersize=6, label='子模型平均准确率', alpha=0.8)
+                markersize=6, label='submodel_avg', alpha=0.8)
         
         # 如果有子模型的全局准确率数据，也绘制出来
         if global_accuracies and len(global_accuracies) == len(submodel_rounds):
             ax.plot(submodel_rounds, global_accuracies, 's-', color='#00D2D3', linewidth=3, 
-                    markersize=7, label='聚合模型准确率', alpha=0.9)
+                    markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
-        ax.set_xlabel('训练轮次', fontsize=14, fontweight='bold')
-        ax.set_ylabel('准确率', fontsize=14, fontweight='bold')
-        ax.set_title('子模型分配后准确率统计', fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('round', fontsize=14, fontweight='bold')
+        ax.set_ylabel('accuracy', fontsize=14, fontweight='bold')
+        ax.set_title('submodel_accuracy', fontsize=16, fontweight='bold', pad=20)
         ax.legend(fontsize=12, loc='best', frameon=True, fancybox=True, shadow=True)
         ax.grid(True, alpha=0.3, linestyle='--')
         ax.set_ylim(0, 1)
