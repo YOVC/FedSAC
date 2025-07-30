@@ -528,7 +528,7 @@ class Server(BasicServer):
                 markersize=6, label='client_min', alpha=0.8)
         ax.plot(rounds, avg_accuracies, 'o-', color='#45B7D1', linewidth=2.5, 
                 markersize=6, label='client_avg', alpha=0.8)
-        ax.plot(rounds, global_accuracies, 's-', color='#96CEB4', linewidth=3, 
+        ax.plot(rounds, global_accuracies, 's-', color='#FF6B6B', linewidth=3, 
                 markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
@@ -560,7 +560,7 @@ class Server(BasicServer):
         max_accuracies = [max(round_acc) for round_acc in client_accuracies]
         min_accuracies = [min(round_acc) for round_acc in client_accuracies]
         avg_accuracies = self.training_history['submodel_assignment']['avg_accuracy']
-        global_accuracies = self.training_history['submodel_assignment']['global_accuracy']
+        global_accuracies = self.training_history['local_training']['global_accuracy']
         
         # 子模型数据可能从第二轮开始，需要调整轮次
         submodel_rounds = rounds[-len(client_accuracies):] if len(rounds) > len(client_accuracies) else rounds
@@ -575,7 +575,7 @@ class Server(BasicServer):
         
         # 如果有子模型的全局准确率数据，也绘制出来
         if global_accuracies and len(global_accuracies) == len(submodel_rounds):
-            ax.plot(submodel_rounds, global_accuracies, 's-', color='#00D2D3', linewidth=3, 
+            ax.plot(submodel_rounds, global_accuracies, 's-', color='#FF6B6B', linewidth=3, 
                     markersize=7, label='global', alpha=0.9)
         
         # 设置图表样式
