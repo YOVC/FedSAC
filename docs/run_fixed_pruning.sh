@@ -50,7 +50,7 @@ echo "实验完成！"
 
 
 python main.py \
-    --task cifar10_cnum10_dist2_skew1.0_seed0 \
+    --task cifar10_cnum10_dist20_skew1.0_seed0 \
     --algorithm GradFL \
     --model resnet18 \
     --num_rounds 50 \
@@ -61,4 +61,4 @@ python main.py \
     --seed 0 \
     --gpu 0 \
     --neuron_eval_interval 1 \
-    --mode neuron
+    --mode awareWeight

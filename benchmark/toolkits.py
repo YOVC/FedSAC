@@ -240,7 +240,8 @@ class DefaultTaskGen(BasicTaskGen):
             #用户一样 uniform
             #6000/n_participants为每个用户的数据量
             n_participants = self.num_clients
-            train_sum = int(self.num_clients) * 3000
+            # train_sum = int(self.num_clients) * 3000
+            train_sum = len(self.train_data)
             local_datas = random_split(sample_indices=list(range(train_sum)), m_bins=n_participants)
 
         elif self.dist_id == 21:

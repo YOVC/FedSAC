@@ -111,6 +111,7 @@ def initialize(option):
     bmk_core_path = '.'.join(['benchmark', bmk_name, 'core'])  # 核心功能路径
     # 设置计算设备（GPU或CPU）
     utils.fmodule.device = torch.device('cuda:{}'.format(option['gpu']) if torch.cuda.is_available() and option['gpu'] != -1 else 'cpu')
+    print(utils.fmodule.device)
     # 动态导入任务计算器
     utils.fmodule.TaskCalculator = getattr(importlib.import_module(bmk_core_path), 'TaskCalculator')
     # 设置优化器

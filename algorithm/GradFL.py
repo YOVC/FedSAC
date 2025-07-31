@@ -202,7 +202,7 @@ class Server(BasicServer):
         self.aggregate_client_models(trained_models, self.selected_clients, t, isUseGlobal=False)
         
         # 5. 测试模型性能
-        self.test_local_and_global_models(trained_models, t)
+        # self.test_local_and_global_models(trained_models, t)
 
         # 6. 为下一轮构建客户端子模型（第一轮之后）
         if t < self.num_rounds:  # 确保不在最后一轮构建子模型
@@ -220,7 +220,7 @@ class Server(BasicServer):
             self.construct_client_submodels(self.selected_clients)
             
             logging.info(f"开始测试子模型精度")
-            self.test_local_and_global_models(self.client_submodels, t, isTestGlobal=False)
+            # self.test_local_and_global_models(self.client_submodels, t, isTestGlobal=False)
         # 7. 更新客户端信息
         if t < self.num_rounds:  # 只在非最后一轮更新客户端信息
             for idx in self.selected_clients:
@@ -758,6 +758,7 @@ class Client(BasicClient):
                 }
             )
         
+        logger.time_start(f'client {self.client_id} Train Time Cost')
         # 执行实际训练
         model.train()
         
@@ -780,7 +781,7 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
-        
+        logger.time_end(f'client {self.client_id} Train Time Cost')
         return
     
     def _calculate_model_size(self, model):

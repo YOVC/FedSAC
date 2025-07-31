@@ -244,7 +244,10 @@ class ClientResourceSimulator:
         # 创建输入张量并进行前向传播
         model.eval()
         with torch.no_grad():
-            input_tensor = torch.randn(1, *input_shape)
+            # 获取模型所在的设备
+            device = next(model.parameters()).device
+            # 创建输入张量并移动到模型所在的设备
+            input_tensor = torch.randn(1, *input_shape).to(device)
             _ = model(input_tensor)
         
         # 计算总FLOPs
