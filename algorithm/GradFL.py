@@ -20,6 +20,7 @@ import matplotlib
 import os
 import csv
 from benchmark.cifar10.model.gradfl_models.global_neuron_importance import create_global_importance_calculator
+from .client_resource_simulator import ClientResourceSimulator
 matplotlib.use('Agg')  # 使用非交互式后端
 
 # 配置日志格式
@@ -74,6 +75,25 @@ class Server(BasicServer):
         os.makedirs(self.csv_save_dir, exist_ok=True)
         self.csv_file_path = os.path.join(self.csv_save_dir, '{}.csv'.format(self.mode))
         self._initialize_csv_file()
+        
+        # 初始化客户端资源模拟器
+        self.enable_resource_simulation = option.get('enable_resource_simulation', True)
+        if self.enable_resource_simulation:
+            resource_config_file = option.get('resource_config_file', None)
+            self.resource_simulator = ClientResourceSimulator(
+                num_clients=self.num_clients,
+                seed=option.get('seed', 42),
+                config_file=resource_config_file
+            )            
+            # 打印资源统计信息
+            self.resource_simulator.print_resource_statistics()
+            
+            # 保存资源配置
+            resource_config_path = os.path.join(self.csv_save_dir, 'resource_config.json')
+            self.resource_simulator.save_config(resource_config_path)
+        else:
+            self.resource_simulator = None
+            logging.info("资源模拟器已禁用")
         
     def run(self):
         """
@@ -366,6 +386,17 @@ class Server(BasicServer):
         # 更新全局模型
         self.model.load_state_dict(global_temp_params)
     
+    def communicate_with(self, client_id):
+        """
+        与指定客户端通信，设置资源信息并进行训练
+        """
+        # 为客户端设置资源信息
+        if hasattr(self, 'resource_simulator') and self.resource_simulator is not None:
+            self.clients[client_id].set_resource_info(client_id, self.resource_simulator)
+        
+        # 调用父类的communicate_with方法
+        return super().communicate_with(client_id)
+
     def pack(self, client_id):
         """打包发送给客户端的信息"""
         return {"model" : self.client_submodels[client_id]}
@@ -640,16 +671,61 @@ class Server(BasicServer):
 class Client(BasicClient):
     def __init__(self, option, name='', train_data=None, valid_data=None):
         super(Client, self).__init__(option, name, train_data, valid_data)
+        self.client_id = None  # 将在服务器端设置
+        self.resource_simulator = None  # 将在服务器端设置
 
-    def train(self, model):
-        """客户端本地训练过程"""
-        logger.time_start('Train Time Cost')
+    def set_resource_info(self, client_id, resource_simulator):
+        """设置客户端资源信息"""
+        self.client_id = client_id
+        self.resource_simulator = resource_simulator
+
+    def train(self, model, dataset=None, optimizer=None):
+        """客户端训练方法，集成资源模拟""" 
+        # 如果有资源模拟器，计算资源相关信息
+        if hasattr(self, 'resource_simulator') and self.resource_simulator is not None and self.client_id is not None:
+            model_size_mb = self._calculate_model_size(model)
+            
+            # 计算训练时间
+            training_time = self.resource_simulator.calculate_training_time(
+                self.client_id, model_size_mb, epochs=self.epochs
+            )
+            
+            # 计算资源贡献度
+            contribution = self.resource_simulator.calculate_resource_contribution(
+                self.client_id, training_time
+            )
+            
+            # 获取客户端配置
+            profile = self.resource_simulator.get_client_profile(self.client_id)
+            
+            # 记录资源信息到日志
+            logging.info(f"客户端 {self.client_id} 资源信息:")
+            logging.info(f"  训练时间: {training_time:.2f}秒")
+            logging.info(f"  计算能力评分: {profile.compute_score:.3f}")
+            logging.info(f"  资源贡献度: {contribution:.3f}")
+            logging.info(f"  CPU: {profile.cpu_cores}核 @ {profile.cpu_frequency:.1f}GHz")
+            logging.info(f"  内存: {profile.memory_gb}GB")
+            
+            # 更新训练历史
+            self.resource_simulator.update_training_history(
+                self.client_id, getattr(self, 'current_round', 0), training_time, model_size_mb, contribution
+            )
+        
+        # 执行实际训练
         model.train()
-        data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
-        optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
-                                                lr=self.learning_rate, 
-                                                weight_decay=self.weight_decay, 
-                                                momentum=self.momentum)
+        
+        # 使用传入的dataset或默认的train_data
+        if dataset is not None:
+            data_loader = dataset
+        else:
+            data_loader = self.calculator.get_data_loader(self.train_data, batch_size=self.batch_size)
+        
+        # 使用传入的optimizer或创建新的
+        if optimizer is None:
+            optimizer = self.calculator.get_optimizer(self.optimizer_name, model, 
+                                                    lr=self.learning_rate, 
+                                                    weight_decay=self.weight_decay, 
+                                                    momentum=self.momentum)
         
         for iter in range(self.epochs):
             for batch_id, batch_data in enumerate(data_loader):
@@ -657,5 +733,20 @@ class Client(BasicClient):
                 loss = self.calculator.get_loss(model, batch_data)
                 loss.backward()
                 optimizer.step()
-        logger.time_end('Train Time Cost')
+        
         return
+    
+    def _calculate_model_size(self, model):
+        """计算模型大小（MB）"""
+        param_size = 0
+        buffer_size = 0
+        
+        for param in model.parameters():
+            # nelement()获取参数的元素总数，element_size()获取每个元素的字节大小
+            param_size += param.nelement() * param.element_size()
+        
+        for buffer in model.buffers():
+            buffer_size += buffer.nelement() * buffer.element_size()
+        
+        size_mb = (param_size + buffer_size) / (1024 * 1024)
+        return size_mb
