@@ -390,67 +390,6 @@ class ClientResourceSimulator:
         """获取所有客户端配置"""
         return self.client_profiles.copy()
     
-    def get_statistics(self) -> Dict:
-        """
-        获取资源模拟器的统计信息
-        
-        Returns:
-            包含统计信息的字典
-        """
-        if not self.client_profiles:
-            return {'num_clients': 0}
-        
-        # 客户端分布参数统计
-        cpu_means = [p.cpu_efficiency_mean for p in self.client_profiles]
-        cpu_stds = [p.cpu_efficiency_std for p in self.client_profiles]
-        
-        # 当前轮效率统计
-        current_efficiencies = [p.current_cpu_efficiency for p in self.client_profiles]
-        
-        stats = {
-            'num_clients': self.num_clients,
-            'client_distribution_params': {
-                'mean_of_means': np.mean(cpu_means),
-                'std_of_means': np.std(cpu_means),
-                'min_mean': np.min(cpu_means),
-                'max_mean': np.max(cpu_means),
-                'mean_of_stds': np.mean(cpu_stds),
-            },
-            'current_round_efficiency': {
-                'mean': np.mean(current_efficiencies),
-                'std': np.std(current_efficiencies),
-                'min': np.min(current_efficiencies),
-                'max': np.max(current_efficiencies)
-            },
-            'distribution_source': 'external' if self.use_external_distributions else 'global'
-        }
-        
-        # 如果使用全局分布，添加全局分布信息
-        if not self.use_external_distributions:
-            stats['global_distribution'] = {
-                'mean': self.global_cpu_efficiency_mean,
-                'std': self.global_cpu_efficiency_std
-            }
-            stats['client_distribution_params']['std_ratio'] = self.client_std_ratio
-        
-        return stats
-    
-    def print_resource_statistics(self):
-        """打印资源统计信息"""
-        stats = self.get_statistics()
-        if stats['num_clients'] == 0:
-            print("没有客户端资源配置")
-            return
-        
-        cpu_eff = stats['cpu_efficiency']
-        dist = stats['distribution']
-        
-        print("=== 客户端资源统计 ===")
-        print(f"客户端数量: {stats['num_clients']}")
-        print(f"CPU计算效率(GFLOPS): 平均={cpu_eff['mean']:.2f}, 标准差={cpu_eff['std']:.2f}")
-        print(f"CPU效率范围: [{cpu_eff['min']:.1f}, {cpu_eff['max']:.1f}] GFLOPS")
-        print(f"分布参数: 均值={dist['mean']:.1f}, 标准差={dist['std']:.1f}")
-    
     def save_config(self, file_path: str):
         """保存配置到文件"""
         config_data = {

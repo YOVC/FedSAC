@@ -79,7 +79,6 @@ class Server(BasicServer):
         # 初始化客户端资源模拟器
         self.enable_resource_simulation = option.get('enable_resource_simulation', True)
         if self.enable_resource_simulation:
-            resource_config_file = option.get('resource_config_file', None)
             client_distributions = option.get('client_distributions', None)
             client_distributions = {
                     0: {'mean': 25.0, 'std': 1.5},  # 高端设备
@@ -98,10 +97,8 @@ class Server(BasicServer):
                 # 使用外部传入的客户端分布参数
                 logging.info("使用外部传入的客户端CPU效率分布参数")
                 self.resource_simulator = ClientResourceSimulator.from_client_distributions(
-                    num_clients=self.num_clients,
                     client_distributions=client_distributions,
                     seed=option.get('seed', 42),
-                    config_file=resource_config_file
                 )
             else:
                 # 使用全局分布参数自动生成客户端分布
@@ -112,12 +109,7 @@ class Server(BasicServer):
                     global_std=option.get('global_cpu_std', 0.3),
                     std_ratio=option.get('cpu_std_ratio', 0.2),
                     seed=option.get('seed', 42),
-                    config_file=resource_config_file
-                )
-            
-            # 打印资源统计信息
-            self.resource_simulator.print_resource_statistics()
-            
+                )            
             # 保存资源配置
             resource_config_path = os.path.join(self.csv_save_dir, 'resource_config.json')
             self.resource_simulator.save_config(resource_config_path)
