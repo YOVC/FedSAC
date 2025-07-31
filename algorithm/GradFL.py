@@ -80,11 +80,41 @@ class Server(BasicServer):
         self.enable_resource_simulation = option.get('enable_resource_simulation', True)
         if self.enable_resource_simulation:
             resource_config_file = option.get('resource_config_file', None)
-            self.resource_simulator = ClientResourceSimulator(
-                num_clients=self.num_clients,
-                seed=option.get('seed', 42),
-                config_file=resource_config_file
-            )            
+            client_distributions = option.get('client_distributions', None)
+            client_distributions = {
+                    0: {'mean': 25.0, 'std': 1.5},  # 高端设备
+                    1: {'mean': 25.0, 'std': 3.0},  # 高端设备 稳定性差
+                    2: {'mean': 15.0, 'std': 1.5},  # 中端设备
+                    3: {'mean': 15.0, 'std': 3},  # 中端设备 稳定性差
+                    4: {'mean': 8.0, 'std': 1.5},   # 低端设备
+                    5: {'mean': 8.0, 'std': 3.0},   # 低端设备 稳定性差
+                    6: {'mean': 12.0, 'std': 2.0},  # 中间值
+                    7: {'mean': 12.0, 'std': 2.0},  # 中间值
+                    8: {'mean': 6.0, 'std': 1.5},   # 低性能设备
+                    9: {'mean': 6.0, 'std': 0.5},   # 稳定低性能设备
+                }
+            # 根据是否提供外部分布参数选择创建方式
+            if client_distributions is not None:
+                # 使用外部传入的客户端分布参数
+                logging.info("使用外部传入的客户端CPU效率分布参数")
+                self.resource_simulator = ClientResourceSimulator.from_client_distributions(
+                    num_clients=self.num_clients,
+                    client_distributions=client_distributions,
+                    seed=option.get('seed', 42),
+                    config_file=resource_config_file
+                )
+            else:
+                # 使用全局分布参数自动生成客户端分布
+                logging.info("使用全局分布参数自动生成客户端CPU效率分布")
+                self.resource_simulator = ClientResourceSimulator.from_global_distribution(
+                    num_clients=self.num_clients,
+                    global_mean=option.get('global_cpu_mean', 1.0),
+                    global_std=option.get('global_cpu_std', 0.3),
+                    std_ratio=option.get('cpu_std_ratio', 0.2),
+                    seed=option.get('seed', 42),
+                    config_file=resource_config_file
+                )
+            
             # 打印资源统计信息
             self.resource_simulator.print_resource_statistics()
             
@@ -191,10 +221,8 @@ class Server(BasicServer):
                 self.global_importance_cache = self.global_importance_calculator.compute_global_neuron_importance(
                     data_loader, force_recompute=(t % 5 == 0)
                 )
-                logging.info(f"全局神经元重要性计算完成")
                 # 打印重要性统计摘要
                 summary = self.global_importance_calculator.get_importance_summary()
-                logging.info(f"神经元重要性统计:\n{summary}")
             
             logging.info(f"开始构建客户端子模型")
             self.construct_client_submodels(self.selected_clients)
@@ -683,32 +711,59 @@ class Client(BasicClient):
         """客户端训练方法，集成资源模拟""" 
         # 如果有资源模拟器，计算资源相关信息
         if hasattr(self, 'resource_simulator') and self.resource_simulator is not None and self.client_id is not None:
-            model_size_mb = self._calculate_model_size(model)
-            
+            # 计算模型MACs
+            # 尝试获取输入形状（根据数据集类型）
+            if dataset is not None and hasattr(dataset, '__iter__'):
+                # 从数据加载器获取样本
+                for batch_data in dataset:
+                    if isinstance(batch_data, (list, tuple)) and len(batch_data) > 0:
+                        input_shape = batch_data[0].shape
+                    else:
+                        input_shape = batch_data.shape
+                    break
+                # 计算模型MACs
+                model_macs = self.resource_simulator.calculate_model_macs(model, input_shape)
+            elif self.train_data is not None and len(self.train_data) > 0:
+                # 从训练数据获取样本
+                sample_data = self.train_data[0]
+                if isinstance(sample_data, (list, tuple)) and len(sample_data) > 0:
+                    input_shape = sample_data[0].shape
+                else:
+                    input_shape = sample_data.shape
+                model_macs = self.resource_simulator.calculate_model_macs(model, input_shape)
+
             # 计算训练时间
             training_time = self.resource_simulator.calculate_training_time(
-                self.client_id, model_size_mb, epochs=self.epochs
+                client_id=self.client_id,
+                model_macs=model_macs,
+                epochs=self.epochs
             )
             
-            # 计算资源贡献度
-            contribution = self.resource_simulator.calculate_resource_contribution(
-                self.client_id, training_time
-            )
+            # 为当前轮采样CPU效率
+            current_cpu_efficiency = self.resource_simulator.sample_cpu_efficiency(self.client_id)
+            
             
             # 获取客户端配置
             profile = self.resource_simulator.get_client_profile(self.client_id)
             
             # 记录资源信息到日志
             logging.info(f"客户端 {self.client_id} 资源信息:")
+            logging.info(f"  模型MACs: {model_macs:.2f}M")
             logging.info(f"  训练时间: {training_time:.2f}秒")
-            logging.info(f"  计算能力评分: {profile.compute_score:.3f}")
-            logging.info(f"  资源贡献度: {contribution:.3f}")
-            logging.info(f"  CPU: {profile.cpu_cores}核 @ {profile.cpu_frequency:.1f}GHz")
-            logging.info(f"  内存: {profile.memory_gb}GB")
+            logging.info(f"  CPU效率分布: 均值={profile.cpu_efficiency_mean:.2f}, 标准差={profile.cpu_efficiency_std:.2f} GFLOPS")
+            logging.info(f"  当前轮CPU效率: {current_cpu_efficiency:.2f} GFLOPS")
             
             # 更新训练历史
             self.resource_simulator.update_training_history(
-                self.client_id, getattr(self, 'current_round', 0), training_time, model_size_mb, contribution
+                client_id=self.client_id,
+                round_num=getattr(self, 'current_round', 0),
+                training_metrics={
+                    'training_time': training_time,
+                    'model_macs': model_macs,
+                    'cpu_efficiency_mean': profile.cpu_efficiency_mean,
+                    'cpu_efficiency_std': profile.cpu_efficiency_std,
+                    'current_cpu_efficiency': current_cpu_efficiency
+                }
             )
         
         # 执行实际训练
